@@ -114,5 +114,16 @@ for (const definition of sources) {
 }
 
 sqlite.exec("CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key)");
+sqlite.exec(`
+  DROP INDEX IF EXISTS idx_alloc;
+  DROP INDEX IF EXISTS idx_routes;
+  DROP INDEX IF EXISTS idx_geo;
+  CREATE INDEX IF NOT EXISTS idx_alloc_by_start ON allocations(ip_version, start_ip_sort);
+  CREATE INDEX IF NOT EXISTS idx_alloc_by_end ON allocations(ip_version, end_ip_sort);
+  CREATE INDEX IF NOT EXISTS idx_routes_by_start ON routes(ip_version, start_ip_sort);
+  CREATE INDEX IF NOT EXISTS idx_routes_by_end ON routes(ip_version, end_ip_sort);
+  CREATE INDEX IF NOT EXISTS idx_geo_by_start ON geolocations(ip_version, start_ip_sort);
+  CREATE INDEX IF NOT EXISTS idx_geo_by_end ON geolocations(ip_version, end_ip_sort);
+`);
 sqlite.exec("ANALYZE lookup_prefixes");
 console.log("lookup prefix index complete");

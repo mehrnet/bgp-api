@@ -43,5 +43,12 @@ No deployment is performed by this project. Before the first Worker deploy:
 The importer uses `gh release download` inside GitHub Actions and does not run
 on this machine. It performs the blue/green D1 promotion described above.
 
+Every successful import also creates a GitHub release with both database
+distributions: `mehrnet_bgp.tar.gz` is the normal source database and
+`mehrnet_bgp_indexed.tar.gz` contains the range and prefix indexes used by the
+API. `SHA256SUMS.txt` verifies the downloads. GitHub requires each release
+asset to be below 2 GiB, so an oversized indexed archive is automatically split
+into numbered parts.
+
 The response contract and the current data limitations are documented in
 [docs/data-contract.md](docs/data-contract.md).

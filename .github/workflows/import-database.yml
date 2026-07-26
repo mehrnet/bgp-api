@@ -18,7 +18,7 @@ on:
     - cron: "23 3 * * 0"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: bgp-database-import
@@ -46,10 +46,12 @@ jobs:
           test -n "$PRODUCER_REPOSITORY"
           mkdir database
           if [ "$RELEASE_TAG" = "latest" ]; then
-            gh release download --repo "$PRODUCER_REPOSITORY" --pattern mehrnet_bgp.tar.gz --dir database
+            PRODUCER_TAG="$(gh release view --repo "$PRODUCER_REPOSITORY" --json tagName --jq .tagName)"
           else
-            gh release download "$RELEASE_TAG" --repo "$PRODUCER_REPOSITORY" --pattern mehrnet_bgp.tar.gz --dir database
+            PRODUCER_TAG="$RELEASE_TAG"
           fi
+          gh release download "$PRODUCER_TAG" --repo "$PRODUCER_REPOSITORY" --pattern mehrnet_bgp.tar.gz --dir database
+          echo "PRODUCER_TAG=$PRODUCER_TAG" >> "$GITHUB_ENV"
           tar -xzf database/mehrnet_bgp.tar.gz -C database
       - name: Validate source database
         run: bun run db:validate -- database/mehrnet_bgp.db
@@ -57,6 +59,16 @@ jobs:
         run: bun run db:build-prefix-index -- database/mehrnet_bgp.db
       - name: Convert SQLite database to D1 SQL
         run: sqlite3 database/mehrnet_bgp.db '.dump allocations routes geolocations lookup_prefixes' > database/mehrnet_bgp.sql
+      - name: Package normal and indexed database releases
+        run: |
+          mkdir release
+          cp database/mehrnet_bgp.tar.gz release/mehrnet_bgp.tar.gz
+          tar -czf release/mehrnet_bgp_indexed.tar.gz -C database mehrnet_bgp.db
+          if [ "$(stat --format=%s release/mehrnet_bgp_indexed.tar.gz)" -ge 2040000000 ]; then
+            split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 release/mehrnet_bgp_indexed.tar.gz release/mehrnet_bgp_indexed.tar.gz.part-
+            rm release/mehrnet_bgp_indexed.tar.gz
+          fi
+          sha256sum release/* > release/SHA256SUMS.txt
       - name: Build secondary database
         run: |
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
@@ -84,3 +96,18 @@ jobs:
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file database/mehrnet_bgp.sql
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
+      - name: Publish database release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "db-${PRODUCER_TAG}-${GITHUB_RUN_NUMBER}" release/* \
+            --title "MehrNet BGP Database - ${PRODUCER_TAG}" \
+            --notes "Source release: ${PRODUCER_REPOSITORY}@${PRODUCER_TAG}
+
+          Assets:
+          - mehrnet_bgp.tar.gz: normal source database.
+          - mehrnet_bgp_indexed.tar.gz: indexed database used by bgp-api.
+          - SHA256SUMS.txt: SHA-256 checksums for all assets.
+
+          If the indexed archive exceeds GitHub's per-asset limit, download every
+          numbered mehrnet_bgp_indexed.tar.gz.part-* file and concatenate them."

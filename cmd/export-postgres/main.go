@@ -91,6 +91,9 @@ func main() {
 }
 
 func copyValue(value string) string {
+	// PostgreSQL TEXT accepts only valid UTF-8 and cannot store NUL bytes.
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	value = strings.ReplaceAll(value, "\x00", "\uFFFD")
 	value = strings.ReplaceAll(value, `\`, `\\`)
 	value = strings.ReplaceAll(value, "\t", `\t`)
 	value = strings.ReplaceAll(value, "\n", `\n`)

@@ -12,6 +12,7 @@ const repository = createIpLookupRepository({ all: (query) => db.all(query) });
 const config = readConfig({
   CORS_ALLOWED_ORIGINS_JSON: process.env.CORS_ALLOWED_ORIGINS_JSON,
   ACTIVE_DATABASE: process.env.ACTIVE_DATABASE,
+  ORIGIN_AUTH_TOKEN: process.env.ORIGIN_AUTH_TOKEN,
 });
 const app = createApiApp(repository, config);
 const port = Number.parseInt(process.env.PORT ?? "3102", 10);

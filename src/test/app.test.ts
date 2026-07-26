@@ -55,6 +55,18 @@ describe("IP lookup route", () => {
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://app.example.test");
   });
 
+  test("requires the Worker origin token when configured", async () => {
+    const protectedApp = createApiApp(repository, {
+      corsAllowedOrigins: [],
+      activeDatabase: "primary",
+      originAuthToken: "shared-origin-token",
+    });
+    expect((await protectedApp.request("https://api.example.test/v1/health")).status).toBe(401);
+    expect((await protectedApp.request("https://api.example.test/v1/health", {
+      headers: { "x-bgp-api-origin-token": "shared-origin-token" },
+    })).status).toBe(200);
+  });
+
   test("returns 429 when Cloudflare's native limiter rejects the client", async () => {
     const limitedApp = createApiApp(repository, { corsAllowedOrigins: [], activeDatabase: "secondary" }, {
       limit: async () => ({ success: false }),

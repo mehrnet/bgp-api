@@ -6,6 +6,7 @@ import type { IpLookupRepository } from "./repository";
 export interface AppConfig {
   corsAllowedOrigins: string[];
   activeDatabase: "primary" | "secondary";
+  originAuthToken?: string;
 }
 
 export interface LookupRateLimiter {
@@ -26,6 +27,9 @@ export function createApiApp(repository: IpLookupRepository, config: AppConfig, 
   const app = new Hono();
 
   app.use("*", async (c, next) => {
+    if (config.originAuthToken && c.req.header("x-bgp-api-origin-token") !== config.originAuthToken) {
+      return c.json(error("UNAUTHORIZED", "origin authorization required"), 401);
+    }
     const origin = allowedOrigin(config, c.req.header("origin"));
     if (c.req.method === "OPTIONS") {
       const headers = new Headers({

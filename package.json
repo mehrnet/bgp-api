@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun --hot src/bun.ts",
+    "dev:postgres": "bun --hot src/bun-postgres.ts",
+    "start:postgres": "bun src/bun-postgres.ts",
     "dev:worker": "wrangler dev",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
@@ -16,6 +18,7 @@
   "dependencies": {
     "drizzle-orm": "^0.44.2",
     "hono": "^4.10.4",
+    "postgres": "^3.4.7",
     "zod": "^3.25.76"
   },
   "devDependencies": {

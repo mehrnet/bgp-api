@@ -122,14 +122,22 @@ jobs:
           tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
       - name: Build indexed database
         run: bun run db:build-prefix-index -- mehrnet_bgp.db
-      - name: Package indexed database
+      - name: Export PostgreSQL COPY dump
+        run: bun scripts/export-postgres.ts mehrnet_bgp.db release/mehrnet_bgp_postgres.sql.gz
+      - name: Package database artifacts
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
-          if [ "$(stat --format=%s release/mehrnet_bgp_indexed.tar.gz)" -ge 2040000000 ]; then
-            split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 release/mehrnet_bgp_indexed.tar.gz release/mehrnet_bgp_indexed.tar.gz.part-
-            rm release/mehrnet_bgp_indexed.tar.gz
-          fi
-          sha256sum release/* > release/SHA256SUMS.txt
+          split_asset() {
+            local asset="$1"
+            if [ "$(stat --format=%s "$asset")" -ge 2040000000 ]; then
+              split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 "$asset" "$asset.part-"
+              rm "$asset"
+            fi
+          }
+          split_asset release/mehrnet_bgp.tar.gz
+          split_asset release/mehrnet_bgp_indexed.tar.gz
+          split_asset release/mehrnet_bgp_postgres.sql.gz
+          (cd release && sha256sum * > SHA256SUMS.txt)
           echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
       - name: Publish database release
         env:
@@ -137,10 +145,11 @@ jobs:
         run: |
           gh release create "db-${DATA_TAG}-${GITHUB_RUN_NUMBER}" release/* \
             --title "MehrNet BGP Database - ${DATA_TAG}" \
-            --notes "Assets:
+          --notes "Assets:
           - mehrnet_bgp.tar.gz: normal database.
           - mehrnet_bgp_indexed.tar.gz: range and prefix-indexed database.
+          - mehrnet_bgp_postgres.sql.gz: PostgreSQL COPY dump of the indexed database.
           - SHA256SUMS.txt: SHA-256 checksums for all assets.
 
-          If the indexed archive exceeds GitHub's per-asset limit, download every
-          numbered mehrnet_bgp_indexed.tar.gz.part-* file and concatenate them."
+          If an asset exceeds GitHub's per-asset limit, download every numbered
+          .part-* asset for that file and concatenate them before extracting it."

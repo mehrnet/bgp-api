@@ -88,7 +88,7 @@ async function candidateRows(executor: QueryExecutor, ip: ParsedIp) {
   const keys = sql.join(prefixKeysForIp(ip).map((key) => sql`${key}`), sql`, `);
   const query = (source: "allocation" | "route" | "geofeed") => executor.all<LookupPrefixRow>(sql`
     SELECT start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city
-    FROM lookup_prefixes INDEXED BY idx_lookup_prefix
+    FROM lookup_prefixes
     WHERE source = ${source} AND prefix_key IN (${keys})
     ORDER BY prefix_length DESC
     LIMIT ${MAX_CANDIDATES}

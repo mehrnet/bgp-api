@@ -1,0 +1,3 @@
+# Copy to .dev.vars and point it at a database built by the RIR pipeline.
+LOCAL_DB_PATH=../mehrnet_bgp.db
+CORS_ALLOWED_ORIGINS_JSON=["http://127.0.0.1:3100","http://localhost:3100"]

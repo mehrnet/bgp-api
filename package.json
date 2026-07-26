@@ -1,0 +1,27 @@
+{
+  "name": "bgp-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot src/bun.ts",
+    "dev:worker": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "check": "bun run typecheck && bun run test",
+    "deploy:worker": "wrangler deploy",
+    "db:validate": "bun scripts/validate-database.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.44.2",
+    "hono": "^4.10.4",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "bun-types": "^1.3.0",
+    "drizzle-kit": "^0.31.4",
+    "typescript": "^5.9.2",
+    "wrangler": "^4.24.3"
+  }
+}

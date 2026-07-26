@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bgp-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-26",
+  "routes": [
+    {
+      "pattern": "bgp-api.mehrnet.com",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "CORS_ALLOWED_ORIGINS_JSON": "[]"
+  },
+  "d1_databases": [
+    {
+      "binding": "BGP_DB",
+      "database_name": "bgp-api",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

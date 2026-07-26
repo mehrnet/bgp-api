@@ -25,20 +25,20 @@ requests per minute per client IP; Bun development intentionally uses no limit.
 
 ## Cloudflare preparation
 
-No deployment is performed by this project. Before the first Worker deploy:
+GitHub Actions never receives a Cloudflare API token and never deploys D1 or
+the Worker. Before the first production deployment:
 
 1. Create both D1 databases: `bunx wrangler d1 create bgp-api-primary` and
    `bunx wrangler d1 create bgp-api-secondary`.
 2. Replace both placeholder `database_id` values in `wrangler.jsonc` with the
    returned IDs.
-3. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets.
-4. Run **Build and Publish BGP Database**. It downloads all five RIR source
-   datasets itself, then builds, indexes, publishes, and rolls out the data.
-5. The workflow stages new data in secondary, deploys against it, rebuilds
-   primary, switches back to primary, then refreshes secondary as standby.
+3. Configure the deployment server with the Cloudflare API token.
+4. Have that server poll the latest GitHub release, download the indexed asset,
+   and perform the primary/secondary D1 switch and Worker deployment.
 
-The database build runs entirely inside GitHub Actions and performs the
-blue/green D1 promotion described above.
+The database build runs entirely inside GitHub Actions. It is scheduled for
+04:00 UTC and only publishes release assets; the deployment server's 05:00 UTC
+cron is responsible for consuming a completed release.
 
 Every successful import also creates a GitHub release with both database
 distributions: `mehrnet_bgp.tar.gz` is the normal source database and

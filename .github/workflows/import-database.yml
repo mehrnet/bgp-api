@@ -2,14 +2,8 @@ name: Build and Publish BGP Database
 
 on:
   workflow_dispatch:
-    inputs:
-      deploy_d1:
-        description: Roll out the completed database to D1 after building
-        required: true
-        default: false
-        type: boolean
   schedule:
-    - cron: "23 3 * * 0"
+    - cron: "0 4 * * *"
 
 permissions:
   contents: write
@@ -79,9 +73,6 @@ jobs:
   build-release-and-deploy:
     needs: parse-rir
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -131,7 +122,7 @@ jobs:
           tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
       - name: Build indexed database
         run: bun run db:build-prefix-index -- mehrnet_bgp.db
-      - name: Package indexed database and prepare D1 import
+      - name: Package indexed database
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
           if [ "$(stat --format=%s release/mehrnet_bgp_indexed.tar.gz)" -ge 2040000000 ]; then
@@ -139,42 +130,7 @@ jobs:
             rm release/mehrnet_bgp_indexed.tar.gz
           fi
           sha256sum release/* > release/SHA256SUMS.txt
-          sqlite3 mehrnet_bgp.db '.dump allocations routes geolocations lookup_prefixes' > mehrnet_bgp.sql
           echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
-      - name: Build secondary database
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: |
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file mehrnet_bgp.sql
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
-      - name: Validate secondary database
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: |
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > secondary-validation.json
-          bun -e "const result = JSON.parse(await Bun.file('secondary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('secondary database validation failed');"
-      - name: Deploy Worker against secondary
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: bunx wrangler deploy --var ACTIVE_DATABASE:secondary
-      - name: Build primary database
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: |
-          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
-          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --file mehrnet_bgp.sql
-          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
-      - name: Validate primary database
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: |
-          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > primary-validation.json
-          bun -e "const result = JSON.parse(await Bun.file('primary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('primary database validation failed');"
-      - name: Deploy Worker against primary
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: bunx wrangler deploy --var ACTIVE_DATABASE:primary
-      - name: Rebuild standby secondary database
-        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
-        run: |
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file mehrnet_bgp.sql
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
       - name: Publish database release
         env:
           GH_TOKEN: ${{ github.token }}

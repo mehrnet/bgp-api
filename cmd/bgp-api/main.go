@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -42,6 +43,7 @@ func main() {
 		AllowedOrigins:  allowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS_JSON")),
 		OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
 		DatabaseEngine:  "postgresql",
+		TrustedProxies:  trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
 	})
 	server := &http.Server{
 		Addr:              listenAddress(),
@@ -65,6 +67,21 @@ func main() {
 	if err := server.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+func trustedProxies(value string) []netip.Prefix {
+	if value == "" {
+		value = "127.0.0.1/32,::1/128"
+	}
+	prefixes := make([]netip.Prefix, 0)
+	for _, item := range strings.Split(value, ",") {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(item))
+		if err != nil {
+			log.Fatalf("TRUSTED_PROXY_CIDRS contains an invalid CIDR: %v", err)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
 }
 
 func listenAddress() string {

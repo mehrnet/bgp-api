@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"math/big"
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -19,6 +21,7 @@ type Config struct {
 	AllowedOrigins  map[string]struct{}
 	OriginAuthToken string
 	DatabaseEngine  string
+	TrustedProxies  []netip.Prefix
 }
 
 type nullableString = *string
@@ -97,16 +100,17 @@ func New(repository Repository, config Config) http.Handler {
 			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1})
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/health":
 			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1, "database": config.DatabaseEngine})
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/me":
+			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies))
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/ip/"):
-			lookupIP(writer, request, repository)
+			lookupIP(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/ip/"))
 		default:
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}
 	})
 }
 
-func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository) {
-	input := strings.TrimPrefix(request.URL.Path, "/v1/ip/")
+func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
 	ip, ok := ipkey.Parse(input)
 	if !ok {
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "path parameter must be a valid IPv4 or IPv6 address")
@@ -122,6 +126,47 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
+	peer, ok := addressFromRemote(request.RemoteAddr)
+	if !ok {
+		return ""
+	}
+	if !isTrustedProxy(peer, trustedProxies) {
+		return peer.String()
+	}
+	for _, header := range []string{"X-BGP-API-Cloudflare-IP", "X-BGP-API-Forwarded-IP"} {
+		if candidate, ok := addressFromHeader(request.Header.Get(header)); ok {
+			return candidate.String()
+		}
+	}
+	return peer.String()
+}
+
+func addressFromRemote(remote string) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote
+	}
+	return addressFromHeader(host)
+}
+
+func addressFromHeader(value string) (netip.Addr, bool) {
+	address, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return address.Unmap(), true
+}
+
+func isTrustedProxy(address netip.Addr, trustedProxies []netip.Prefix) bool {
+	for _, prefix := range trustedProxies {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func setCORS(writer http.ResponseWriter, origin string, allowed bool) {

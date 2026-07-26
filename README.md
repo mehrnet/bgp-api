@@ -15,8 +15,11 @@ go run ./cmd/bgp-api
 
 `LISTEN_ADDR` defaults to `127.0.0.1:3102`; `POSTGRES_MAX_CONNECTIONS`
 defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
-`X-BGP-API-Origin-Token` header. The API provides `GET /v1/ip/:ip` and
-`GET /v1/health`.
+`X-BGP-API-Origin-Token` header. The API provides `GET /v1/ip/:ip`,
+`GET /v1/me`, and `GET /v1/health`. `GET /v1/me` has the identical lookup
+response schema and uses the Cloudflare client address only when the incoming
+connection is from a published Cloudflare address range; otherwise it uses the
+raw peer address.
 
 For production, build one static binary:
 

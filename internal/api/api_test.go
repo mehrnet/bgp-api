@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/mehrnet/bgp-api/internal/ipkey"
@@ -43,5 +45,29 @@ func TestHandlerRequiresOriginToken(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("authorized status = %d", response.Code)
+	}
+}
+
+func TestHandlerLooksUpTrustedCloudflareClientIP(t *testing.T) {
+	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
+	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	request.RemoteAddr = "127.0.0.1:3102"
+	request.Header.Set("X-BGP-API-Cloudflare-IP", "185.227.108.163")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"185.227.108.163"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerIgnoresForwardedIPFromUntrustedPeer(t *testing.T) {
+	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
+	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	request.RemoteAddr = "94.141.98.12:443"
+	request.Header.Set("X-BGP-API-Cloudflare-IP", "185.227.108.163")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"94.141.98.12"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }

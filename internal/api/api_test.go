@@ -64,7 +64,8 @@ func TestHandlerLooksUpTrustedCloudflareIPv6(t *testing.T) {
 	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("::1/128")}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
 	request.RemoteAddr = "[::1]:3102"
-	request.Header.Set("X-BGP-API-Cloudflare-IP", "2606:4700:4700::1111")
+	request.Header.Set("X-BGP-API-Cloudflare-IP", "240.16.0.1")
+	request.Header.Set("X-BGP-API-Cloudflare-IPv6", "2606:4700:4700::1111")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"2606:4700:4700::1111"`) {

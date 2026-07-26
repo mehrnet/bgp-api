@@ -136,7 +136,7 @@ func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
 	if !isTrustedProxy(peer, trustedProxies) {
 		return peer.String()
 	}
-	for _, header := range []string{"X-BGP-API-Cloudflare-IP", "X-BGP-API-Forwarded-IP"} {
+	for _, header := range []string{"X-BGP-API-Cloudflare-IPv6", "X-BGP-API-Cloudflare-IP", "X-BGP-API-Forwarded-IP"} {
 		if candidate, ok := addressFromHeader(request.Header.Get(header)); ok {
 			return candidate.String()
 		}

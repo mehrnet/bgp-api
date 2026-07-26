@@ -19,7 +19,8 @@ defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the
 `GET /v1/me`, and `GET /v1/health`. `GET /v1/me` has the identical lookup
 response schema and uses the Cloudflare client address only when the incoming
 connection is from a published Cloudflare address range; otherwise it uses the
-raw peer address.
+raw peer address. When Cloudflare Pseudo IPv4 overwrites the standard client
+header, the API prefers Cloudflare's preserved IPv6 client header.
 
 For production, build one static binary:
 

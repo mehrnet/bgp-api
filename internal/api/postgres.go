@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -231,6 +232,14 @@ func (repository *PostgresRepository) autnum(ctx context.Context, asn uint32) (*
 	object.CountryRaw = upper(object.CountryRaw)
 	object.CountryCode = countryCode(object.CountryRaw)
 	object.Registry = lower(object.Registry)
+	object.Name = present(object.Name)
+	object.Organization = present(object.Organization)
+	object.Status = present(object.Status)
+	object.Created = present(object.Created)
+	object.LastModified = present(object.LastModified)
+	object.Source = present(object.Source)
+	object.Maintainers = present(object.Maintainers)
+	object.Description = present(object.Description)
 	return &object, nil
 }
 
@@ -255,6 +264,11 @@ func readRouteObjects(rows pgx.Rows) ([]RouteObject, error) {
 			object.ASNumber = &value
 		}
 		object.Registry = lower(object.Registry)
+		object.Source = present(object.Source)
+		object.Maintainers = present(object.Maintainers)
+		object.Organization = present(object.Organization)
+		object.Description = present(object.Description)
+		object.Relation = strings.TrimSpace(object.Relation)
 		objects = append(objects, object)
 	}
 	if err := rows.Err(); err != nil {
@@ -293,6 +307,15 @@ func scanAllocationObject(row rowScanner) (AllocationObject, error) {
 	object.Registry = lower(object.Registry)
 	object.CountryRaw = upper(object.CountryRaw)
 	object.CountryCode = countryCode(object.CountryRaw)
+	object.Name = present(object.Name)
+	object.Status = present(object.Status)
+	object.AllocationDate = present(object.AllocationDate)
+	object.Created = present(object.Created)
+	object.LastModified = present(object.LastModified)
+	object.Source = present(object.Source)
+	object.Maintainers = present(object.Maintainers)
+	object.Organization = present(object.Organization)
+	object.Description = present(object.Description)
 	return object, nil
 }
 

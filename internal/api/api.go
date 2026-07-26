@@ -478,6 +478,7 @@ func nullable(candidate *LookupCandidate, selectValue func(LookupCandidate) null
 }
 
 func lower(value nullableString) nullableString {
+	value = present(value)
 	if value == nil {
 		return nil
 	}
@@ -486,11 +487,23 @@ func lower(value nullableString) nullableString {
 }
 
 func upper(value nullableString) nullableString {
+	value = present(value)
 	if value == nil {
 		return nil
 	}
 	uppercase := strings.ToUpper(*value)
 	return &uppercase
+}
+
+func present(value nullableString) nullableString {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 func countryCode(value nullableString) nullableString {

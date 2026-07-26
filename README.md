@@ -39,6 +39,10 @@ versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
 stable `public.lookup_prefixes` view, then removes the old schema. The Go API
 keeps serving through the swap without a restart.
 
+It requires `curl`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub
+API is sufficient for its daily run; set `BGP_API_GITHUB_TOKEN` only to raise
+the GitHub API rate limit.
+
 Run it after the GitHub producer build with a lock to prevent overlapping
 imports. Keep `DATABASE_URL` in a root-readable environment file.
 
@@ -52,6 +56,10 @@ Enable the orange-cloud proxy for `bgp-api.mehrnet.com`. Configure a WAF rate
 limit on `GET /v1/ip/*`, and optionally cache successful lookup responses with
 a TTL shorter than the daily data-update window. Protect the Go origin with a
 firewall and Authenticated Origin Pulls.
+
+The production unit and reverse-proxy templates are in `deploy/`. The Caddy
+proxy injects the origin token, so the Go process remains inaccessible without
+the proxy header even on the loopback interface.
 
 ## Producer Releases
 

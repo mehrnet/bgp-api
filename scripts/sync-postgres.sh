@@ -21,6 +21,15 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+github_api() {
+  local endpoint="$1"
+  local -a headers=(-H 'Accept: application/vnd.github+json')
+  if [ -n "${BGP_API_GITHUB_TOKEN:-}" ]; then
+    headers+=(-H "Authorization: Bearer $BGP_API_GITHUB_TOKEN")
+  fi
+  curl --fail --location --silent --show-error --retry 3 "${headers[@]}" "https://api.github.com$endpoint"
+}
+
 schema_for_tag() {
   local tag="$1"
   if [[ "$tag" =~ ^db-([0-9]{4})\.([0-9]{2})\.([0-9]{2})-([0-9]{4})-[0-9]+$ ]]; then
@@ -49,9 +58,15 @@ download_release() {
   local tag="$1"
   local release_dir="$WORK_DIR/release"
   mkdir -p "$release_dir"
-  gh release download "$tag" --repo "$REPOSITORY" --dir "$release_dir" --clobber \
-    --pattern 'SHA256SUMS.txt' \
-    --pattern 'mehrnet_bgp_postgres.sql.gz*'
+  local asset_url
+  download_asset() {
+    local asset_name="$1"
+    asset_url="$(jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' <<<"$release_json")"
+    [ -n "$asset_url" ] && [ "$asset_url" != "null" ] || die "release $tag is missing $asset_name"
+    curl --fail --location --silent --show-error --retry 3 --output "$release_dir/$asset_name" "$asset_url"
+  }
+
+  download_asset 'SHA256SUMS.txt'
 
   [ -s "$release_dir/SHA256SUMS.txt" ] || die "release $tag has no checksum manifest"
   local expected
@@ -59,22 +74,29 @@ download_release() {
   [ -n "$expected" ] || die "release $tag has no PostgreSQL dump checksum"
 
   local dump="$release_dir/mehrnet_bgp_postgres.sql.gz"
-  if [ ! -f "$dump" ]; then
-    shopt -s nullglob
+  asset_url="$(jq -r '.assets[] | select(.name == "mehrnet_bgp_postgres.sql.gz") | .browser_download_url' <<<"$release_json")"
+  if [ -n "$asset_url" ] && [ "$asset_url" != "null" ]; then
+    download_asset 'mehrnet_bgp_postgres.sql.gz'
+  else
+    local -a part_names
+    mapfile -t part_names < <(jq -r '.assets[] | select(.name | startswith("mehrnet_bgp_postgres.sql.gz.part-")) | .name' <<<"$release_json" | sort)
+    [ "${#part_names[@]}" -gt 0 ] || die "release $tag has no PostgreSQL dump"
+    for part_name in "${part_names[@]}"; do
+      download_asset "$part_name"
+    done
     local parts=("$release_dir"/mehrnet_bgp_postgres.sql.gz.part-*)
-    shopt -u nullglob
-    [ "${#parts[@]}" -gt 0 ] || die "release $tag has no PostgreSQL dump"
     cat "${parts[@]}" > "$dump"
   fi
-  (cd "$release_dir" && printf '%s\n' "$expected" | sha256sum -c -)
+  (cd "$release_dir" && printf '%s\n' "$expected" | sha256sum -c - >&2)
   printf '%s\n' "$dump"
 }
 
 [ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is required"
-for command in gh gzip psql sha256sum; do require_command "$command"; done
+for command in curl gzip jq psql sha256sum; do require_command "$command"; done
 
 initialize_metadata
-latest_tag="$(gh api "repos/$REPOSITORY/releases/latest" --jq '.tag_name')"
+release_json="$(github_api "/repos/$REPOSITORY/releases/latest")"
+latest_tag="$(jq -r '.tag_name' <<<"$release_json")"
 [ -n "$latest_tag" ] || die "could not determine the latest release"
 new_schema="$(schema_for_tag "$latest_tag")"
 active_tag="$(psql_query "SELECT release_tag FROM public.bgp_api_dataset WHERE singleton;")"

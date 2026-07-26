@@ -1,0 +1,7 @@
+bgp-api.mehrnet.com {
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:3102 {
+		header_up X-BGP-API-Origin-Token {env.ORIGIN_AUTH_TOKEN}
+	}
+}

@@ -44,7 +44,7 @@ func main() {
 		DatabaseEngine:  "postgresql",
 	})
 	server := &http.Server{
-		Addr:              ":" + strconv.Itoa(environmentInt("PORT", 3102)),
+		Addr:              listenAddress(),
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -65,6 +65,13 @@ func main() {
 	if err := server.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+func listenAddress() string {
+	if address := os.Getenv("LISTEN_ADDR"); address != "" {
+		return address
+	}
+	return "127.0.0.1:" + strconv.Itoa(environmentInt("PORT", 3102))
 }
 
 func environmentInt(name string, fallback int) int {

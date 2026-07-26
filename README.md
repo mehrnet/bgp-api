@@ -13,8 +13,8 @@ export CORS_ALLOWED_ORIGINS_JSON='["https://your-frontend.example"]'
 go run ./cmd/bgp-api
 ```
 
-`PORT` defaults to `3102`; `POSTGRES_MAX_CONNECTIONS` defaults to `8`.
-Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
+`LISTEN_ADDR` defaults to `127.0.0.1:3102`; `POSTGRES_MAX_CONNECTIONS`
+defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
 `X-BGP-API-Origin-Token` header. The API provides `GET /v1/ip/:ip` and
 `GET /v1/health`.
 

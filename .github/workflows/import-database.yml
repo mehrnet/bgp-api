@@ -70,7 +70,7 @@ jobs:
             geofeeds_${{ matrix.rir }}.txt
           if-no-files-found: error
 
-  build-release-and-deploy:
+  build-release:
     needs: parse-rir
     runs-on: ubuntu-latest
     steps:

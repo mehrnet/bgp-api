@@ -32,16 +32,13 @@ No deployment is performed by this project. Before the first Worker deploy:
 2. Replace both placeholder `database_id` values in `wrangler.jsonc` with the
    returned IDs.
 3. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets.
-   If the producer is private, add `BGP_DATABASE_READ_TOKEN` with read access
-   to it. Set the `BGP_DATABASE_REPOSITORY` repository variable so the weekly
-   scheduled importer knows which producer release to read.
-4. Run **Import BGP Database** with the repository and release tag that publish
-   `mehrnet_bgp.tar.gz`.
+4. Run **Build and Publish BGP Database**. It downloads all five RIR source
+   datasets itself, then builds, indexes, publishes, and rolls out the data.
 5. The workflow stages new data in secondary, deploys against it, rebuilds
    primary, switches back to primary, then refreshes secondary as standby.
 
-The importer uses `gh release download` inside GitHub Actions and does not run
-on this machine. It performs the blue/green D1 promotion described above.
+The database build runs entirely inside GitHub Actions and performs the
+blue/green D1 promotion described above.
 
 Every successful import also creates a GitHub release with both database
 distributions: `mehrnet_bgp.tar.gz` is the normal source database and

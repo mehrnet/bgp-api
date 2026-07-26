@@ -1,19 +1,13 @@
-name: Import BGP Database
+name: Build and Publish BGP Database
 
 on:
   workflow_dispatch:
     inputs:
-      producer_repository:
-        description: GitHub repository that publishes mehrnet_bgp.tar.gz
-        required: false
-        type: string
-      release_tag:
-        description: Release tag to import, or latest
+      deploy_d1:
+        description: Roll out the completed database to D1 after building
         required: true
-        default: latest
-        type: string
-  repository_dispatch:
-    types: [bgp_database_released]
+        default: false
+        type: boolean
   schedule:
     - cron: "23 3 * * 0"
 
@@ -21,92 +15,175 @@ permissions:
   contents: write
 
 concurrency:
-  group: bgp-database-import
+  group: bgp-database-build
   cancel-in-progress: false
 
 jobs:
-  import:
+  parse-rir:
+    name: Parse ${{ matrix.rir }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rir: [ripe, apnic, afrinic, lacnic, arin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Install download client
+        run: sudo apt-get update && sudo apt-get install -y aria2
+      - name: Select RIR source files
+        run: |
+          mkdir raw_data
+          case "${{ matrix.rir }}" in
+            ripe)
+              printf '%s\n' \
+                https://ftp.ripe.net/ripe/dbase/split/ripe.db.inetnum.gz \
+                https://ftp.ripe.net/ripe/dbase/split/ripe.db.inet6num.gz \
+                https://ftp.ripe.net/ripe/dbase/split/ripe.db.route.gz \
+                https://ftp.ripe.net/ripe/dbase/split/ripe.db.route6.gz > urls.txt
+              ;;
+            apnic)
+              printf '%s\n' \
+                https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz \
+                https://ftp.apnic.net/apnic/whois/apnic.db.inet6num.gz \
+                https://ftp.apnic.net/apnic/whois/apnic.db.route.gz \
+                https://ftp.apnic.net/apnic/whois/apnic.db.route6.gz > urls.txt
+              ;;
+            afrinic)
+              printf '%s\n' https://ftp.afrinic.net/pub/dbase/afrinic.db.gz > urls.txt
+              ;;
+            lacnic)
+              printf '%s\n' https://ftp.lacnic.net/lacnic/dbase/lacnic.db.gz > urls.txt
+              ;;
+            arin)
+              printf '%s\n' \
+                https://ftp.arin.net/pub/stats/arin/delegated-arin-extended-latest \
+                https://ftp.arin.net/pub/rr/arin.db.gz > urls.txt
+              ;;
+          esac
+      - name: Download RIR data
+        run: aria2c -x 16 -s 16 -j 5 --dir=raw_data --input-file=urls.txt
+      - name: Parse allocations, routes, and geofeed URLs
+        run: go run scripts/go/parse-rir.go ${{ matrix.rir }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: data-${{ matrix.rir }}
+          path: |
+            allocations_${{ matrix.rir }}.csv
+            routes_${{ matrix.rir }}.csv
+            geofeeds_${{ matrix.rir }}.txt
+          if-no-files-found: error
+
+  build-release-and-deploy:
+    needs: parse-rir
     runs-on: ubuntu-latest
     env:
-      PRODUCER_REPOSITORY: ${{ inputs.producer_repository || github.event.client_payload.producer_repository || vars.BGP_DATABASE_REPOSITORY }}
-      RELEASE_TAG: ${{ inputs.release_tag || github.event.client_payload.release_tag || 'latest' }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.0"
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
       - run: bun install --frozen-lockfile
-      - name: Download producer release
-        env:
-          # github.token cannot read releases from another private repository.
-          GH_TOKEN: ${{ secrets.BGP_DATABASE_READ_TOKEN || github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Merge RIR artifacts
         run: |
-          test -n "$PRODUCER_REPOSITORY"
-          mkdir database
-          if [ "$RELEASE_TAG" = "latest" ]; then
-            PRODUCER_TAG="$(gh release view --repo "$PRODUCER_REPOSITORY" --json tagName --jq .tagName)"
-          else
-            PRODUCER_TAG="$RELEASE_TAG"
-          fi
-          gh release download "$PRODUCER_TAG" --repo "$PRODUCER_REPOSITORY" --pattern mehrnet_bgp.tar.gz --dir database
-          echo "PRODUCER_TAG=$PRODUCER_TAG" >> "$GITHUB_ENV"
-          tar -xzf database/mehrnet_bgp.tar.gz -C database
-      - name: Validate source database
-        run: bun run db:validate -- database/mehrnet_bgp.db
-      - name: Build prefix lookup index
-        run: bun run db:build-prefix-index -- database/mehrnet_bgp.db
-      - name: Convert SQLite database to D1 SQL
-        run: sqlite3 database/mehrnet_bgp.db '.dump allocations routes geolocations lookup_prefixes' > database/mehrnet_bgp.sql
-      - name: Package normal and indexed database releases
+          mkdir final_data
+          cat artifacts/allocations_*.csv > final_data/allocations.csv
+          cat artifacts/routes_*.csv > final_data/routes.csv
+          touch artifacts/geofeeds_dummy.txt
+          cat artifacts/geofeeds_*.txt | sort -u > final_data/geofeeds.txt
+      - name: Fetch geofeeds
+        run: go run scripts/go/fetch-geofeeds.go
+      - name: Build normal SQLite database
+        run: |
+          sqlite3 mehrnet_bgp.db <<'SQL'
+          PRAGMA synchronous = OFF;
+          PRAGMA journal_mode = MEMORY;
+          CREATE TABLE allocations (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, registry TEXT, country TEXT, netname TEXT);
+          CREATE TABLE routes (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, cidr TEXT, asn TEXT);
+          CREATE TABLE geolocations (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, country TEXT, region TEXT, city TEXT);
+          .mode csv
+          .import final_data/allocations.csv allocations
+          .import final_data/routes.csv routes
+          .import final_data/geolocations.csv geolocations
+          CREATE INDEX idx_alloc ON allocations(start_ip_sort);
+          CREATE INDEX idx_routes ON routes(start_ip_sort);
+          CREATE INDEX idx_geo ON geolocations(start_ip_sort);
+          VACUUM;
+          ANALYZE;
+          SQL
+          bun run db:validate -- mehrnet_bgp.db
+      - name: Package normal database
         run: |
           mkdir release
-          cp database/mehrnet_bgp.tar.gz release/mehrnet_bgp.tar.gz
-          tar -czf release/mehrnet_bgp_indexed.tar.gz -C database mehrnet_bgp.db
+          tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
+      - name: Build indexed database
+        run: bun run db:build-prefix-index -- mehrnet_bgp.db
+      - name: Package indexed database and prepare D1 import
+        run: |
+          tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
           if [ "$(stat --format=%s release/mehrnet_bgp_indexed.tar.gz)" -ge 2040000000 ]; then
             split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 release/mehrnet_bgp_indexed.tar.gz release/mehrnet_bgp_indexed.tar.gz.part-
             rm release/mehrnet_bgp_indexed.tar.gz
           fi
           sha256sum release/* > release/SHA256SUMS.txt
+          sqlite3 mehrnet_bgp.db '.dump allocations routes geolocations lookup_prefixes' > mehrnet_bgp.sql
+          echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
       - name: Build secondary database
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: |
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file database/mehrnet_bgp.sql
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file mehrnet_bgp.sql
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
       - name: Validate secondary database
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: |
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > database/secondary-validation.json
-          bun -e "const result = JSON.parse(await Bun.file('database/secondary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('secondary database validation failed');"
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > secondary-validation.json
+          bun -e "const result = JSON.parse(await Bun.file('secondary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('secondary database validation failed');"
       - name: Deploy Worker against secondary
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: bunx wrangler deploy --var ACTIVE_DATABASE:secondary
       - name: Build primary database
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: |
           bunx wrangler d1 execute BGP_DB_PRIMARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
-          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --file database/mehrnet_bgp.sql
+          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --file mehrnet_bgp.sql
           bunx wrangler d1 execute BGP_DB_PRIMARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
       - name: Validate primary database
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: |
-          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > database/primary-validation.json
-          bun -e "const result = JSON.parse(await Bun.file('database/primary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('primary database validation failed');"
+          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > primary-validation.json
+          bun -e "const result = JSON.parse(await Bun.file('primary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('primary database validation failed');"
       - name: Deploy Worker against primary
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: bunx wrangler deploy --var ACTIVE_DATABASE:primary
       - name: Rebuild standby secondary database
+        if: ${{ github.event_name == 'schedule' || inputs.deploy_d1 }}
         run: |
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
-          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file database/mehrnet_bgp.sql
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file mehrnet_bgp.sql
           bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
       - name: Publish database release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "db-${PRODUCER_TAG}-${GITHUB_RUN_NUMBER}" release/* \
-            --title "MehrNet BGP Database - ${PRODUCER_TAG}" \
-            --notes "Source release: ${PRODUCER_REPOSITORY}@${PRODUCER_TAG}
-
-          Assets:
-          - mehrnet_bgp.tar.gz: normal source database.
-          - mehrnet_bgp_indexed.tar.gz: indexed database used by bgp-api.
+          gh release create "db-${DATA_TAG}-${GITHUB_RUN_NUMBER}" release/* \
+            --title "MehrNet BGP Database - ${DATA_TAG}" \
+            --notes "Assets:
+          - mehrnet_bgp.tar.gz: normal database.
+          - mehrnet_bgp_indexed.tar.gz: range and prefix-indexed database.
           - SHA256SUMS.txt: SHA-256 checksums for all assets.
 
           If the indexed archive exceeds GitHub's per-asset limit, download every

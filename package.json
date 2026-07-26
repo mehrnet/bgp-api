@@ -12,6 +12,7 @@
     "test": "bun test",
     "check": "bun run typecheck && bun run test",
     "deploy:worker": "wrangler deploy",
+    "sync:postgres": "bash scripts/sync-postgres.sh",
     "db:validate": "bun scripts/validate-database.ts",
     "db:build-prefix-index": "bun scripts/build-prefix-index.ts"
   },

@@ -3,6 +3,6 @@
 LOCAL_DB_PATH=../mehrnet_bgp.db
 DATABASE_URL=postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api
 CORS_ALLOWED_ORIGINS_JSON=["http://127.0.0.1:3100","http://localhost:3100"]
-ACTIVE_DATABASE=primary
+DATABASE_ENGINE=sqlite
 # Set this only when the Bun service is behind the Cloudflare Worker proxy.
 ORIGIN_AUTH_TOKEN=

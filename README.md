@@ -9,14 +9,13 @@ domain and native rate limiting, but does not store or import this dataset.
 
 ## Bun with PostgreSQL
 
-The producer publishes a compressed PostgreSQL `COPY` dump containing all
-source tables, the materialized `lookup_prefixes` table, indexes, and
-`ANALYZE`. Import it into an empty PostgreSQL database:
+The producer publishes a compressed PostgreSQL `COPY` dump containing the
+materialized `lookup_prefixes` table, its index, and `ANALYZE`. This is the
+only table the API queries.
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
-gh release download --repo mehrnet/bgp-api --pattern 'mehrnet_bgp_postgres.sql.gz'
-gzip -dc mehrnet_bgp_postgres.sql.gz | psql "$DATABASE_URL"
+bun run sync:postgres
 
 DATABASE_URL="$DATABASE_URL" \
 CORS_ALLOWED_ORIGINS_JSON='["https://your-frontend.example"]' \
@@ -24,10 +23,18 @@ bun run start:postgres
 ```
 
 `DATABASE_URL` selects the PostgreSQL runtime. `POSTGRES_MAX_CONNECTIONS`
-defaults to 16. The dump must be imported into an empty database. For a daily
-blue/green refresh, load the new dump into an inactive PostgreSQL database,
-validate it, change the Bun service's `DATABASE_URL` to that database, and
-restart the service. Rebuild the newly inactive database afterward.
+defaults to 16. The synchronizer uses one PostgreSQL database. It imports the
+new release into a versioned `bgp_YYYYMMDD_HHMM` schema, validates it, and
+atomically repoints `public.lookup_prefixes` to the new table. It then removes
+the old schema. Bun keeps its existing PostgreSQL connection and does not need
+a restart.
+
+Run the synchronizer daily after the GitHub Actions build. Keep `DATABASE_URL`
+in a root-readable environment file rather than embedding it in crontab:
+
+```cron
+0 5 * * * flock -n /var/lock/bgp-api-postgres-sync.lock sh -lc 'set -a; . /etc/bgp-api/postgres.env; set +a; cd /srv/bgp-api && bun run sync:postgres' >> /var/log/bgp-api-postgres-sync.log 2>&1
+```
 
 PostgreSQL is the production database because a daily full D1 import of this
 indexed dataset would incur very high row-write charges. Do not use D1 for the
@@ -85,7 +92,7 @@ Each successful release includes:
 
 - `mehrnet_bgp.tar.gz`: normal SQLite database.
 - `mehrnet_bgp_indexed.tar.gz`: SQLite database with lookup indexes.
-- `mehrnet_bgp_postgres.sql.gz`: indexed PostgreSQL `COPY` dump.
+- `mehrnet_bgp_postgres.sql.gz`: indexed PostgreSQL `COPY` dump for the next versioned schema.
 - `SHA256SUMS.txt`: hashes for every release asset.
 
 Assets over GitHub's release limit are split into numbered `.part-*` files.

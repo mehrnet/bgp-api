@@ -5,7 +5,7 @@ import type { IpLookupRepository } from "./repository";
 
 export interface AppConfig {
   corsAllowedOrigins: string[];
-  activeDatabase: "primary" | "secondary";
+  databaseEngine: "sqlite" | "postgresql";
   originAuthToken?: string;
 }
 
@@ -49,7 +49,7 @@ export function createApiApp(repository: IpLookupRepository, config: AppConfig, 
   });
 
   app.get("/", (c) => c.json({ ok: true, service: "bgp-api", version: 1 }));
-  app.get("/v1/health", (c) => c.json({ ok: true, service: "bgp-api", version: 1, active_database: config.activeDatabase }));
+  app.get("/v1/health", (c) => c.json({ ok: true, service: "bgp-api", version: 1, database: config.databaseEngine }));
   app.get("/v1/ip/:ip", async (c) => {
     const clientIp = c.req.header("cf-connecting-ip") ?? "unknown";
     const rateLimit = await lookupRateLimiter.limit({ key: clientIp });

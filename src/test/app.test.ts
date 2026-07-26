@@ -34,7 +34,7 @@ const record = ipLookupResponseSchema.parse({
 });
 
 const repository: IpLookupRepository = { lookup: async () => record };
-const app = createApiApp(repository, { corsAllowedOrigins: ["https://app.example.test"], activeDatabase: "primary" });
+const app = createApiApp(repository, { corsAllowedOrigins: ["https://app.example.test"], databaseEngine: "sqlite" });
 
 describe("IP lookup route", () => {
   test("returns the public JSON contract", async () => {
@@ -58,7 +58,7 @@ describe("IP lookup route", () => {
   test("requires the Worker origin token when configured", async () => {
     const protectedApp = createApiApp(repository, {
       corsAllowedOrigins: [],
-      activeDatabase: "primary",
+      databaseEngine: "postgresql",
       originAuthToken: "shared-origin-token",
     });
     expect((await protectedApp.request("https://api.example.test/v1/health")).status).toBe(401);
@@ -68,7 +68,7 @@ describe("IP lookup route", () => {
   });
 
   test("returns 429 when Cloudflare's native limiter rejects the client", async () => {
-    const limitedApp = createApiApp(repository, { corsAllowedOrigins: [], activeDatabase: "secondary" }, {
+    const limitedApp = createApiApp(repository, { corsAllowedOrigins: [], databaseEngine: "postgresql" }, {
       limit: async () => ({ success: false }),
     });
     const response = await limitedApp.request("https://api.example.test/v1/ip/1.1.1.1", {

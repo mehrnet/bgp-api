@@ -11,7 +11,7 @@ const db = drizzle(sqlite, { schema });
 const repository = createIpLookupRepository({ all: (query) => db.all(query) });
 const config = readConfig({
   CORS_ALLOWED_ORIGINS_JSON: process.env.CORS_ALLOWED_ORIGINS_JSON,
-  ACTIVE_DATABASE: process.env.ACTIVE_DATABASE,
+  DATABASE_ENGINE: "sqlite",
   ORIGIN_AUTH_TOKEN: process.env.ORIGIN_AUTH_TOKEN,
 });
 const app = createApiApp(repository, config);

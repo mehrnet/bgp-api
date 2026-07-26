@@ -18,7 +18,7 @@ const repository = createIpLookupRepository({
 });
 const config = readConfig({
   CORS_ALLOWED_ORIGINS_JSON: process.env.CORS_ALLOWED_ORIGINS_JSON,
-  ACTIVE_DATABASE: process.env.ACTIVE_DATABASE,
+  DATABASE_ENGINE: "postgresql",
   ORIGIN_AUTH_TOKEN: process.env.ORIGIN_AUTH_TOKEN,
 });
 const app = createApiApp(repository, config);

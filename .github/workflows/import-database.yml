@@ -122,8 +122,12 @@ jobs:
           tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
       - name: Build indexed database
         run: bun run db:build-prefix-index -- mehrnet_bgp.db
+      - name: Name release dataset
+        run: |
+          echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
+          echo "POSTGRES_SCHEMA=bgp_$(date -u +'%Y%m%d_%H%M')" >> "$GITHUB_ENV"
       - name: Export PostgreSQL COPY dump
-        run: bun scripts/export-postgres.ts mehrnet_bgp.db release/mehrnet_bgp_postgres.sql.gz
+        run: bun scripts/export-postgres.ts mehrnet_bgp.db release/mehrnet_bgp_postgres.sql.gz "$POSTGRES_SCHEMA"
       - name: Package database artifacts
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
@@ -138,7 +142,6 @@ jobs:
           split_asset release/mehrnet_bgp_indexed.tar.gz
           split_asset release/mehrnet_bgp_postgres.sql.gz
           (cd release && sha256sum * > SHA256SUMS.txt)
-          echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
       - name: Publish database release
         env:
           GH_TOKEN: ${{ github.token }}

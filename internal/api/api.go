@@ -17,11 +17,30 @@ type Repository interface {
 	Lookup(context.Context, ipkey.Parsed) (*LookupResponse, error)
 }
 
+type ResourceRepository interface {
+	LookupPrefix(context.Context, ipkey.ParsedPrefix, Page) (*PrefixResponse, error)
+	LookupRange(context.Context, ipkey.ParsedRange, RangeKind, Page) (*RangeResponse, error)
+	LookupASN(context.Context, uint32, Page) (*ASNResponse, error)
+}
+
+type Page struct {
+	Cursor int64
+	Limit  int
+}
+
+type RangeKind string
+
+const (
+	RangeAllocations RangeKind = "allocations"
+	RangeRoutes      RangeKind = "routes"
+)
+
 type Config struct {
 	AllowedOrigins  map[string]struct{}
 	OriginAuthToken string
 	DatabaseEngine  string
 	TrustedProxies  []netip.Prefix
+	Enricher        Enricher
 }
 
 type nullableString = *string
@@ -62,6 +81,7 @@ type LookupResponse struct {
 		Route      bool `json:"route"`
 		Geofeed    bool `json:"geofeed"`
 	} `json:"sources"`
+	Enrichment *PrefixEnrichment `json:"enrichment,omitempty"`
 }
 
 type errorResponse struct {
@@ -101,16 +121,173 @@ func New(repository Repository, config Config) http.Handler {
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/health":
 			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1, "database": config.DatabaseEngine})
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/me":
-			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies))
+			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies), config.Enricher)
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/ip/"):
-			lookupIP(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/ip/"))
+			lookupIP(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/ip/"), config.Enricher)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/prefix":
+			lookupPrefix(writer, request, repository, config.Enricher)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/range":
+			lookupRange(writer, request, repository)
+		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/asn/"):
+			lookupASN(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/asn/"), config.Enricher)
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/search":
+			search(writer, request)
 		default:
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}
 	})
 }
 
-func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
+func resourceRepository(writer http.ResponseWriter, repository Repository) (ResourceRepository, bool) {
+	resources, ok := repository.(ResourceRepository)
+	if !ok {
+		writeError(writer, http.StatusServiceUnavailable, "DATASET_FEATURE_UNAVAILABLE", "this dataset does not include normalized route and ASN records")
+	}
+	return resources, ok
+}
+
+func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository Repository, enricher Enricher) {
+	resources, ok := resourceRepository(writer, repository)
+	if !ok {
+		return
+	}
+	prefix, valid := ipkey.ParsePrefix(request.URL.Query().Get("prefix"))
+	if !valid {
+		writeError(writer, http.StatusBadRequest, "INVALID_PREFIX", "prefix must be a valid IPv4 or IPv6 CIDR")
+		return
+	}
+	page, valid := requestPage(writer, request)
+	if !valid {
+		return
+	}
+	response, err := resources.LookupPrefix(request.Context(), prefix, page)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected prefix lookup failure")
+		return
+	}
+	if response == nil {
+		writeError(writer, http.StatusNotFound, "PREFIX_NOT_FOUND", "no allocation or route object matched this prefix")
+		return
+	}
+	if enricher != nil {
+		response.Enrichment = enricher.Prefix(request.Context(), prefix.Canonical)
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func lookupRange(writer http.ResponseWriter, request *http.Request, repository Repository) {
+	resources, ok := resourceRepository(writer, repository)
+	if !ok {
+		return
+	}
+	query := request.URL.Query()
+	rangeValue, valid := ipkey.ParseRange(query.Get("start"), query.Get("end"))
+	if !valid {
+		writeError(writer, http.StatusBadRequest, "INVALID_RANGE", "start and end must be valid addresses in the same IP version, with start not greater than end")
+		return
+	}
+	kind := RangeKind(query.Get("kind"))
+	if kind == "" {
+		kind = RangeAllocations
+	}
+	if kind != RangeAllocations && kind != RangeRoutes {
+		writeError(writer, http.StatusBadRequest, "INVALID_RANGE_KIND", "kind must be allocations or routes")
+		return
+	}
+	page, valid := requestPage(writer, request)
+	if !valid {
+		return
+	}
+	response, err := resources.LookupRange(request.Context(), rangeValue, kind, page)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected range lookup failure")
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func lookupASN(writer http.ResponseWriter, request *http.Request, repository Repository, input string, enricher Enricher) {
+	resources, ok := resourceRepository(writer, repository)
+	if !ok {
+		return
+	}
+	asn, valid := parseASN(input)
+	if !valid {
+		writeError(writer, http.StatusBadRequest, "INVALID_ASN", "ASN must be a positive AS number, with or without the AS prefix")
+		return
+	}
+	page, valid := requestPage(writer, request)
+	if !valid {
+		return
+	}
+	response, err := resources.LookupASN(request.Context(), asn, page)
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected ASN lookup failure")
+		return
+	}
+	if response == nil {
+		writeError(writer, http.StatusNotFound, "ASN_NOT_FOUND", "no route or aut-num object matched this ASN")
+		return
+	}
+	if enricher != nil {
+		response.Enrichment = enricher.ASN(request.Context(), asn)
+	}
+	writeJSON(writer, http.StatusOK, response)
+}
+
+func search(writer http.ResponseWriter, request *http.Request) {
+	query := strings.TrimSpace(request.URL.Query().Get("q"))
+	if query == "" {
+		writeError(writer, http.StatusBadRequest, "INVALID_QUERY", "q is required")
+		return
+	}
+	if ip, ok := ipkey.Parse(query); ok {
+		writeJSON(writer, http.StatusOK, SearchResponse{Query: query, Type: "ip", Normalized: ip.Canonical, Endpoint: "/v1/ip/" + ip.Canonical})
+		return
+	}
+	if prefix, ok := ipkey.ParsePrefix(query); ok {
+		writeJSON(writer, http.StatusOK, SearchResponse{Query: query, Type: "prefix", Normalized: prefix.Canonical, Endpoint: "/v1/prefix?prefix=" + prefix.Canonical})
+		return
+	}
+	if asn, ok := parseASN(query); ok {
+		writeJSON(writer, http.StatusOK, SearchResponse{Query: query, Type: "asn", Normalized: "AS" + strconv.FormatUint(uint64(asn), 10), Endpoint: "/v1/asn/AS" + strconv.FormatUint(uint64(asn), 10)})
+		return
+	}
+	writeError(writer, http.StatusBadRequest, "INVALID_QUERY", "q must be an IP address, CIDR, or ASN")
+}
+
+func requestPage(writer http.ResponseWriter, request *http.Request) (Page, bool) {
+	page := Page{Limit: 50}
+	query := request.URL.Query()
+	if raw := query.Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			writeError(writer, http.StatusBadRequest, "INVALID_LIMIT", "limit must be between 1 and 100")
+			return Page{}, false
+		}
+		page.Limit = limit
+	}
+	if raw := query.Get("cursor"); raw != "" {
+		cursor, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || cursor < 0 {
+			writeError(writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor must be a non-negative record cursor")
+			return Page{}, false
+		}
+		page.Cursor = cursor
+	}
+	return page, true
+}
+
+func parseASN(input string) (uint32, bool) {
+	value := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(input)), "AS")
+	number, err := strconv.ParseUint(value, 10, 32)
+	if err != nil || number == 0 {
+		return 0, false
+	}
+	return uint32(number), true
+}
+
+func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string, enricher Enricher) {
 	ip, ok := ipkey.Parse(input)
 	if !ok {
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "path parameter must be a valid IPv4 or IPv6 address")
@@ -125,7 +302,19 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		writeError(writer, http.StatusNotFound, "IP_NOT_FOUND", "no RIR allocation, route, or geofeed record matched this IP")
 		return
 	}
+	if enricher != nil && wantsEnrichment(request) {
+		bits := 128
+		if ip.Version == 4 {
+			bits = 32
+		}
+		response.Enrichment = enricher.Prefix(request.Context(), ip.Canonical+"/"+strconv.Itoa(bits))
+	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func wantsEnrichment(request *http.Request) bool {
+	value := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("enrich")))
+	return value == "1" || value == "true"
 }
 
 func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
@@ -192,16 +381,24 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 }
 
 type LookupCandidate struct {
-	StartIPSort string
-	EndIPSort   string
-	IPVersion   int
-	Registry    nullableString
-	Country     nullableString
-	Netname     nullableString
-	CIDR        nullableString
-	ASN         nullableString
-	Region      nullableString
-	City        nullableString
+	StartIPSort    string
+	EndIPSort      string
+	IPVersion      int
+	Registry       nullableString
+	Country        nullableString
+	Netname        nullableString
+	CIDR           nullableString
+	ASN            nullableString
+	Region         nullableString
+	City           nullableString
+	Status         nullableString
+	AllocationDate nullableString
+	Created        nullableString
+	LastModified   nullableString
+	RecordSource   nullableString
+	MntBy          nullableString
+	Org            nullableString
+	Description    nullableString
 }
 
 func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCandidate) *LookupResponse {
@@ -233,6 +430,9 @@ func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCa
 		response.Network.StartIP, response.Network.EndIP = &start, &end
 	}
 	response.Network.Name = nullable(allocation, func(row LookupCandidate) nullableString { return row.Netname })
+	if len(bestRoutes) > 0 {
+		response.Network.Status = nullable(&bestRoutes[0], func(row LookupCandidate) nullableString { return row.Status })
+	}
 
 	if allocation != nil {
 		start := ipkey.SortKeyToIP(allocation.StartIPSort, ip.Version)
@@ -242,6 +442,10 @@ func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCa
 		response.Allocation.CountryRaw = upper(nullable(allocation, func(row LookupCandidate) nullableString { return row.Country }))
 		response.Allocation.CountryCode = countryCode(response.Allocation.CountryRaw)
 		response.Allocation.Name = nullable(allocation, func(row LookupCandidate) nullableString { return row.Netname })
+		response.Allocation.AllocationDate = nullable(allocation, func(row LookupCandidate) nullableString { return row.AllocationDate })
+		response.Allocation.Status = nullable(allocation, func(row LookupCandidate) nullableString { return row.Status })
+		response.AllocationDate = response.Allocation.AllocationDate
+		response.AllocationStatus = response.Allocation.Status
 	}
 	if geolocation != nil {
 		response.Location.CountryCode = countryCode(upper(nullable(geolocation, func(row LookupCandidate) nullableString { return row.Country })))

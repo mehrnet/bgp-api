@@ -35,3 +35,31 @@ func TestParseRejectsInvalidIP(t *testing.T) {
 		t.Fatal("invalid IP parsed")
 	}
 }
+
+func TestParsePrefixNormalizesAndCalculatesBounds(t *testing.T) {
+	prefix, ok := ParsePrefix("1.1.1.42/24")
+	if !ok {
+		t.Fatal("expected IPv4 prefix to parse")
+	}
+	if prefix.Canonical != "1.1.1.0/24" || prefix.Start.Canonical != "1.1.1.0" || prefix.End.Canonical != "1.1.1.255" || prefix.AddressCount != "256" {
+		t.Fatalf("unexpected prefix: %#v", prefix)
+	}
+
+	v6, ok := ParsePrefix("2001:db8::1/64")
+	if !ok || v6.Canonical != "2001:db8::/64" || v6.End.Canonical != "2001:db8::ffff:ffff:ffff:ffff" || v6.AddressCount != "18446744073709551616" {
+		t.Fatalf("unexpected IPv6 prefix: %#v", v6)
+	}
+}
+
+func TestParseRangeCalculatesAddressCount(t *testing.T) {
+	rangeValue, ok := ParseRange("1.1.1.10", "1.1.1.12")
+	if !ok || rangeValue.Version != 4 || rangeValue.AddressCount != "3" {
+		t.Fatalf("unexpected range: %#v", rangeValue)
+	}
+	if _, ok := ParseRange("1.1.1.12", "1.1.1.10"); ok {
+		t.Fatal("descending range parsed")
+	}
+	if _, ok := ParseRange("1.1.1.1", "2001:db8::1"); ok {
+		t.Fatal("mixed IP versions parsed")
+	}
+}

@@ -21,7 +21,7 @@ func main() {
 	}
 	defer database.Close()
 
-	tables := []string{"allocations", "routes", "geolocations"}
+	tables := []string{"allocations", "routes", "autnums", "geolocations"}
 	if *indexed {
 		tables = append(tables, "lookup_prefixes")
 	}

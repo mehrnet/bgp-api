@@ -69,6 +69,11 @@ func main() {
 		log.Fatal(err)
 	}
 	defer routeFile.Close()
+	autnumFile, err := os.Create(fmt.Sprintf("autnums_%s.csv", rirLower))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer autnumFile.Close()
 	geoFile, err := os.Create(fmt.Sprintf("geofeeds_%s.txt", rirLower))
 	if err != nil {
 		log.Fatal(err)
@@ -77,8 +82,10 @@ func main() {
 
 	allocations := csv.NewWriter(allocationFile)
 	routes := csv.NewWriter(routeFile)
+	autnums := csv.NewWriter(autnumFile)
 	defer allocations.Flush()
 	defer routes.Flush()
+	defer autnums.Flush()
 
 	files, err := os.ReadDir("raw_data")
 	if err != nil {
@@ -89,12 +96,12 @@ func main() {
 		if strings.Contains(file.Name(), "delegated-arin") {
 			parseDelegated(path, rirUpper, allocations)
 		} else {
-			parseRPSL(path, rirUpper, allocations, routes, geoFile)
+			parseRPSL(path, rirUpper, allocations, routes, autnums, geoFile)
 		}
 	}
 }
 
-func parseRPSL(path, registry string, allocations, routes *csv.Writer, geoFile *os.File) {
+func parseRPSL(path, registry string, allocations, routes, autnums *csv.Writer, geoFile *os.File) {
 	file, err := os.Open(path)
 	if err != nil {
 		log.Printf("open %s: %v", path, err)
@@ -120,7 +127,7 @@ func parseRPSL(path, registry string, allocations, routes *csv.Writer, geoFile *
 		line := scanner.Text()
 		if line == "" {
 			if len(block) > 0 {
-				processRPSLBlock(block, registry, allocations, routes, geoFile)
+				processRPSLBlock(block, registry, allocations, routes, autnums, geoFile)
 				block = block[:0]
 			}
 			continue
@@ -128,61 +135,143 @@ func parseRPSL(path, registry string, allocations, routes *csv.Writer, geoFile *
 		block = append(block, line)
 	}
 	if len(block) > 0 {
-		processRPSLBlock(block, registry, allocations, routes, geoFile)
+		processRPSLBlock(block, registry, allocations, routes, autnums, geoFile)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("scan %s: %v", path, err)
 	}
 }
 
-func processRPSLBlock(lines []string, registry string, allocations, routes *csv.Writer, geoFile *os.File) {
-	var start, end, country, netname, cidr, asn string
-	version := 0
-	isAllocation, isRoute := false, false
-
+func processRPSLBlock(lines []string, registry string, allocations, routes, autnums *csv.Writer, geoFile *os.File) {
+	attributes := make(map[string][]string)
 	for _, line := range lines {
-		lower := strings.ToLower(line)
-		if strings.HasPrefix(lower, "geofeed:") || strings.Contains(lower, "remarks: geofeed") {
-			if index := strings.Index(line, "https://"); index >= 0 {
-				_, _ = geoFile.WriteString(strings.TrimSpace(line[index:]) + "\n")
+		key, value, ok := rpslAttribute(line)
+		if !ok {
+			continue
+		}
+		if key == "geofeed" || (key == "remarks" && strings.Contains(strings.ToLower(value), "geofeed")) {
+			if index := strings.Index(value, "https://"); index >= 0 {
+				_, _ = geoFile.WriteString(strings.TrimSpace(value[index:]) + "\n")
 			}
 		}
-
-		switch {
-		case strings.HasPrefix(lower, "inetnum:"):
-			isAllocation, version = true, 4
-			parts := strings.Split(strings.TrimSpace(strings.TrimPrefix(lower, "inetnum:")), "-")
-			if len(parts) == 2 {
-				start, end = padIP(parts[0]), padIP(parts[1])
-			}
-		case strings.HasPrefix(lower, "inet6num:"):
-			isAllocation, version = true, 6
-			start, end, _ = cidrToRange(strings.TrimSpace(strings.TrimPrefix(lower, "inet6num:")))
-		case strings.HasPrefix(lower, "route:"):
-			isRoute, version = true, 4
-			cidr = strings.TrimSpace(strings.TrimPrefix(lower, "route:"))
-			start, end, _ = cidrToRange(cidr)
-		case strings.HasPrefix(lower, "route6:"):
-			isRoute, version = true, 6
-			cidr = strings.TrimSpace(strings.TrimPrefix(lower, "route6:"))
-			start, end, _ = cidrToRange(cidr)
-		case strings.HasPrefix(lower, "origin:"):
-			asn = strings.TrimSpace(strings.TrimPrefix(lower, "origin:"))
-		case strings.HasPrefix(lower, "country:"):
-			country = strings.TrimSpace(strings.TrimPrefix(lower, "country:"))
-		case strings.HasPrefix(lower, "netname:"):
-			netname = strings.TrimSpace(strings.TrimPrefix(lower, "netname:"))
-		}
+		attributes[key] = append(attributes[key], value)
 	}
 
+	first := func(key string) string { return firstAttribute(attributes[key]) }
+	metadata := rpslMetadata{
+		country:      strings.ToUpper(first("country")),
+		status:       first("status"),
+		created:      first("created"),
+		lastModified: first("last-modified"),
+		source:       sourceName(first("source")),
+		mntBy:        joinAttributes(attributes["mnt-by"]),
+		org:          first("org"),
+		description:  joinAttributes(attributes["descr"]),
+	}
+
+	if inetnum := first("inetnum"); inetnum != "" {
+		parts := strings.Split(inetnum, "-")
+		if len(parts) == 2 {
+			writeAllocation(allocations, padIP(parts[0]), padIP(parts[1]), 4, registry, metadata, first("netname"), "")
+		}
+		return
+	}
+	if inet6num := first("inet6num"); inet6num != "" {
+		start, end, err := cidrToRange(inet6num)
+		if err == nil {
+			writeAllocation(allocations, start, end, 6, registry, metadata, first("netname"), "")
+		}
+		return
+	}
+	if cidr := first("route"); cidr != "" {
+		writeRoute(routes, cidr, 4, first("origin"), registry, metadata)
+		return
+	}
+	if cidr := first("route6"); cidr != "" {
+		writeRoute(routes, cidr, 6, first("origin"), registry, metadata)
+		return
+	}
+	if asn := first("aut-num"); asn != "" {
+		_ = autnums.Write([]string{
+			strings.ToUpper(asn), registry, metadata.country, first("as-name"), metadata.org,
+			metadata.status, metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.description,
+		})
+	}
+}
+
+type rpslMetadata struct {
+	country, status, created, lastModified, source, mntBy, org, description string
+}
+
+func rpslAttribute(line string) (string, string, bool) {
+	if len(line) == 0 || line[0] == '#' || line[0] == '%' || line[0] == ' ' || line[0] == '\t' {
+		return "", "", false
+	}
+	key, value, found := strings.Cut(line, ":")
+	if !found {
+		return "", "", false
+	}
+	key, value = strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return "", "", false
+	}
+	return key, value, true
+}
+
+func firstAttribute(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func joinAttributes(values []string) string {
+	unique := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, found := unique[value]; found {
+			continue
+		}
+		unique[value] = struct{}{}
+		result = append(result, value)
+	}
+	return strings.Join(result, " | ")
+}
+
+func sourceName(value string) string {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func writeAllocation(writer *csv.Writer, start, end string, version int, registry string, metadata rpslMetadata, netname, allocationDate string) {
 	if start == "" || end == "" {
 		return
 	}
-	if isAllocation {
-		_ = allocations.Write([]string{start, end, fmt.Sprintf("%d", version), registry, strings.ToUpper(country), netname})
-	} else if isRoute && asn != "" {
-		_ = routes.Write([]string{start, end, fmt.Sprintf("%d", version), cidr, strings.ToUpper(asn)})
+	_ = writer.Write([]string{
+		start, end, fmt.Sprintf("%d", version), registry, metadata.country, netname, metadata.status, allocationDate,
+		metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.org, metadata.description,
+	})
+}
+
+func writeRoute(writer *csv.Writer, cidr string, version int, asn, registry string, metadata rpslMetadata) {
+	if asn == "" {
+		return
 	}
+	start, end, err := cidrToRange(cidr)
+	if err != nil || start == "" || end == "" {
+		return
+	}
+	_ = writer.Write([]string{
+		start, end, fmt.Sprintf("%d", version), cidr, strings.ToUpper(asn), registry,
+		metadata.source, metadata.mntBy, metadata.org, metadata.description,
+	})
 }
 
 func parseDelegated(path, registry string, allocations *csv.Writer) {
@@ -224,7 +313,10 @@ func parseDelegated(path, registry string, allocations *csv.Writer) {
 			version = 6
 		}
 		if start != "" && end != "" {
-			_ = allocations.Write([]string{start, end, fmt.Sprintf("%d", version), registry, strings.ToUpper(country), ""})
+			writeAllocation(allocations, start, end, version, registry, rpslMetadata{
+				country: strings.ToUpper(country),
+				status:  parts[6],
+			}, "", parts[5])
 		}
 	}
 	if err := scanner.Err(); err != nil {

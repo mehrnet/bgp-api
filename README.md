@@ -14,9 +14,17 @@ go run ./cmd/bgp-api
 ```
 
 `LISTEN_ADDR` defaults to `127.0.0.1:3102`; `POSTGRES_MAX_CONNECTIONS`
-defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
+defaults to `8`. `ENRICHMENT_ENABLED` defaults to `true`; set it to `false` to
+disable cached RDAP and RIPEstat metadata. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
 `X-BGP-API-Origin-Token` header. The API provides `GET /v1/ip/:ip`,
-`GET /v1/me`, and `GET /v1/health`. `GET /v1/me` has the identical lookup
+`GET /v1/me`, `GET /v1/prefix?prefix=:cidr`,
+`GET /v1/range?start=:ip&end=:ip&kind=allocations|routes`,
+`GET /v1/asn/:asn`, `GET /v1/search?q=:query`, and `GET /v1/health`.
+Resource endpoints accept `limit` (1-100) and the `cursor` returned by a
+previous response; responses contain `next_cursor` when a following page exists.
+Add `?enrich=1` to an IP or `/v1/me` lookup to include the same best-effort
+cached RDAP and RIPEstat context returned by CIDR and ASN resources.
+`GET /v1/me` has the identical lookup
 response schema and uses the Cloudflare client address only when the incoming
 connection is from a published Cloudflare address range; otherwise it uses the
 raw peer address. When Cloudflare Pseudo IPv4 overwrites the standard client
@@ -31,7 +39,9 @@ go build -o bin/bgp-api ./cmd/bgp-api
 ## PostgreSQL Dataset Sync
 
 The producer publishes `mehrnet_bgp_postgres.sql.gz`, a compressed PostgreSQL
-`COPY` snapshot of `lookup_prefixes`, the only table queried by the API.
+`COPY` snapshot. It includes `lookup_prefixes` for low-latency point lookups
+plus normalized `allocation_objects`, `route_objects`, and `autnums` tables
+for range, CIDR, and ASN resources.
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
@@ -40,7 +50,8 @@ export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
 
 The synchronizer uses one PostgreSQL database. It imports the release into a
 versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
-stable `public.lookup_prefixes` view, then removes the old schema. The Go API
+stable `public.lookup_prefixes`, `public.allocation_objects`,
+`public.route_objects`, and `public.autnums` views, then removes the old schema. The Go API
 keeps serving through the swap without a restart.
 
 It requires `curl`, `iconv`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub

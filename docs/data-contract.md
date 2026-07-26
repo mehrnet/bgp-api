@@ -43,20 +43,27 @@ source data are `null`; they are never guessed.
 }
 ```
 
-The current producer database supplies only these fields:
+The producer retains both the point-lookup fields and normalized source
+objects:
 
 | Dataset | Fields retained |
 | --- | --- |
-| `allocations` | IP range, IP version, RIR registry, country, RPSL `netname` |
-| `routes` | IP range, IP version, route CIDR, origin ASN |
+| `allocations` | IP range, IP version, RIR registry, country, `netname`, `status`, delegated allocation date, RPSL `created`, `last-modified`, `source`, `mnt-by`, `org`, and `descr` |
+| `routes` | IP range, IP version, route CIDR, origin ASN, RIR registry, RPSL `source`, `mnt-by`, `org`, and `descr` |
+| `autnums` | RPSL `aut-num`, `as-name`, country, status, provenance, maintainer, organization, and description |
 | `geolocations` | IP range, IP version, country, region, city from geofeeds |
 
-Consequently `allocation_date` and both status fields are `null`. To populate
-them, change the producer before its CSV export to retain RPSL `status`,
-`created`, `last-modified`, `source`, `mnt-by`, `org`, and `descr` attributes;
-for delegated statistics retain the date and allocation status columns. Add
-those columns to the SQLite tables and then extend this API schema in a
-backward-compatible migration.
+`GET /v1/prefix?prefix=:cidr` returns a normalized CIDR descriptor, its
+covering allocation record, and cursor-paginated registered RPSL route
+objects. `GET /v1/range?start=:ip&end=:ip` returns overlapping allocation
+records by default; use `kind=routes` for overlapping route objects.
+`GET /v1/asn/:asn` returns an `aut-num` object and the ASN's registered route
+objects. These route objects are registry/IRR records, not a claim that the
+prefix is visible in the global BGP table.
+
+Prefix and ASN responses may include an `enrichment` object. Its RDAP and
+RIPEstat fields are best-effort, server-side cached data and may be absent
+without affecting the authoritative local result.
 
 `registry` is lowercase for API consistency. `country_raw` preserves source
 values such as the RIR's non-ISO "EU # ..." pseudo-country, while

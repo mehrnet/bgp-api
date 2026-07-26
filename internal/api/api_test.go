@@ -19,6 +19,23 @@ func (fakeRepository) Lookup(_ context.Context, ip ipkey.Parsed) (*LookupRespons
 	return response, nil
 }
 
+type resourceFakeRepository struct{ fakeRepository }
+
+func (resourceFakeRepository) LookupPrefix(_ context.Context, prefix ipkey.ParsedPrefix, _ Page) (*PrefixResponse, error) {
+	return &PrefixResponse{
+		Prefix: PrefixDescriptor{CIDR: prefix.Canonical, Version: prefix.Version, StartIP: prefix.Start.Canonical, EndIP: prefix.End.Canonical, AddressCount: prefix.AddressCount},
+		Routes: RoutePage{Items: []RouteObject{}},
+	}, nil
+}
+
+func (resourceFakeRepository) LookupRange(_ context.Context, rangeValue ipkey.ParsedRange, kind RangeKind, _ Page) (*RangeResponse, error) {
+	return &RangeResponse{Range: RangeDescriptor{StartIP: rangeValue.Start.Canonical, EndIP: rangeValue.End.Canonical, Version: rangeValue.Version, AddressCount: rangeValue.AddressCount}, Kind: kind, Allocations: []AllocationObject{}}, nil
+}
+
+func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, _ Page) (*ASNResponse, error) {
+	return &ASNResponse{ASN: "AS13335", ASNumber: int(asn), Routes: RoutePage{Items: []RouteObject{}}}, nil
+}
+
 func TestHandlerRejectsInvalidIP(t *testing.T) {
 	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql"})
 	request := httptest.NewRequest(http.MethodGet, "/v1/ip/not-an-ip", nil)
@@ -82,5 +99,42 @@ func TestHandlerIgnoresForwardedIPFromUntrustedPeer(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"94.141.98.12"`) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerLooksUpPrefixRangeAndASN(t *testing.T) {
+	handler := New(resourceFakeRepository{}, Config{})
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{"/v1/prefix?prefix=1.1.1.42/24", `"cidr":"1.1.1.0/24"`},
+		{"/v1/range?start=1.1.1.1&end=1.1.1.2", `"address_count":"2"`},
+		{"/v1/asn/13335", `"asn":"AS13335"`},
+	} {
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), test.want) {
+			t.Fatalf("%s: status = %d, body = %s", test.path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestHandlerRejectsInvalidResourceQueries(t *testing.T) {
+	handler := New(resourceFakeRepository{}, Config{})
+	for _, path := range []string{
+		"/v1/prefix?prefix=invalid",
+		"/v1/range?start=1.1.1.2&end=1.1.1.1",
+		"/v1/range?start=1.1.1.1&end=1.1.1.2&kind=unknown",
+		"/v1/asn/AS0",
+		"/v1/asn/AS13335?limit=101",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, body = %s", path, response.Code, response.Body.String())
+		}
 	}
 }

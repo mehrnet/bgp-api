@@ -36,14 +36,16 @@ jobs:
                 https://ftp.ripe.net/ripe/dbase/split/ripe.db.inetnum.gz \
                 https://ftp.ripe.net/ripe/dbase/split/ripe.db.inet6num.gz \
                 https://ftp.ripe.net/ripe/dbase/split/ripe.db.route.gz \
-                https://ftp.ripe.net/ripe/dbase/split/ripe.db.route6.gz > urls.txt
+                https://ftp.ripe.net/ripe/dbase/split/ripe.db.route6.gz \
+                https://ftp.ripe.net/ripe/dbase/split/ripe.db.aut-num.gz > urls.txt
               ;;
             apnic)
               printf '%s\n' \
                 https://ftp.apnic.net/apnic/whois/apnic.db.inetnum.gz \
                 https://ftp.apnic.net/apnic/whois/apnic.db.inet6num.gz \
                 https://ftp.apnic.net/apnic/whois/apnic.db.route.gz \
-                https://ftp.apnic.net/apnic/whois/apnic.db.route6.gz > urls.txt
+                https://ftp.apnic.net/apnic/whois/apnic.db.route6.gz \
+                https://ftp.apnic.net/apnic/whois/apnic.db.aut-num.gz > urls.txt
               ;;
             afrinic)
               printf '%s\n' https://ftp.afrinic.net/pub/dbase/afrinic.db.gz > urls.txt
@@ -59,7 +61,7 @@ jobs:
           esac
       - name: Download RIR data
         run: aria2c -x 16 -s 16 -j 5 --dir=raw_data --input-file=urls.txt
-      - name: Parse allocations, routes, and geofeed URLs
+      - name: Parse allocations, routes, autnums, and geofeed URLs
         run: go run ./cmd/parse-rir ${{ matrix.rir }}
       - uses: actions/upload-artifact@v4
         with:
@@ -67,6 +69,7 @@ jobs:
           path: |
             allocations_${{ matrix.rir }}.csv
             routes_${{ matrix.rir }}.csv
+            autnums_${{ matrix.rir }}.csv
             geofeeds_${{ matrix.rir }}.txt
           if-no-files-found: error
 
@@ -89,6 +92,7 @@ jobs:
           mkdir final_data
           cat artifacts/allocations_*.csv > final_data/allocations.csv
           cat artifacts/routes_*.csv > final_data/routes.csv
+          cat artifacts/autnums_*.csv > final_data/autnums.csv
           touch artifacts/geofeeds_dummy.txt
           cat artifacts/geofeeds_*.txt | sort -u > final_data/geofeeds.txt
       - name: Fetch geofeeds
@@ -98,16 +102,32 @@ jobs:
           sqlite3 mehrnet_bgp.db <<'SQL'
           PRAGMA synchronous = OFF;
           PRAGMA journal_mode = MEMORY;
-          CREATE TABLE allocations (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, registry TEXT, country TEXT, netname TEXT);
-          CREATE TABLE routes (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, cidr TEXT, asn TEXT);
+          CREATE TABLE allocations (
+            start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, registry TEXT, country TEXT, netname TEXT,
+            status TEXT, allocation_date TEXT, created TEXT, last_modified TEXT, source TEXT, mnt_by TEXT, org TEXT, descr TEXT
+          );
+          CREATE TABLE routes (
+            start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, cidr TEXT, asn TEXT, registry TEXT,
+            source TEXT, mnt_by TEXT, org TEXT, descr TEXT
+          );
+          CREATE TABLE autnums (
+            asn TEXT, registry TEXT, country TEXT, as_name TEXT, org TEXT, status TEXT,
+            created TEXT, last_modified TEXT, source TEXT, mnt_by TEXT, descr TEXT
+          );
           CREATE TABLE geolocations (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, country TEXT, region TEXT, city TEXT);
           .mode csv
           .import final_data/allocations.csv allocations
           .import final_data/routes.csv routes
+          .import final_data/autnums.csv autnums
           .import final_data/geolocations.csv geolocations
-          CREATE INDEX idx_alloc ON allocations(start_ip_sort);
-          CREATE INDEX idx_routes ON routes(start_ip_sort);
-          CREATE INDEX idx_geo ON geolocations(start_ip_sort);
+          CREATE INDEX idx_alloc_by_start ON allocations(ip_version, start_ip_sort);
+          CREATE INDEX idx_alloc_by_end ON allocations(ip_version, end_ip_sort);
+          CREATE INDEX idx_routes_by_start ON routes(ip_version, start_ip_sort);
+          CREATE INDEX idx_routes_by_end ON routes(ip_version, end_ip_sort);
+          CREATE INDEX idx_routes_by_asn ON routes(asn, cidr);
+          CREATE INDEX idx_autnums_by_asn ON autnums(asn);
+          CREATE INDEX idx_geo_by_start ON geolocations(ip_version, start_ip_sort);
+          CREATE INDEX idx_geo_by_end ON geolocations(ip_version, end_ip_sort);
           VACUUM;
           ANALYZE;
           SQL

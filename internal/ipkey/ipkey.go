@@ -25,6 +25,22 @@ type RangePrefix struct {
 	Length int
 }
 
+type ParsedPrefix struct {
+	Canonical    string
+	Version      int
+	PrefixLength int
+	Start        Parsed
+	End          Parsed
+	AddressCount string
+}
+
+type ParsedRange struct {
+	Start        Parsed
+	End          Parsed
+	Version      int
+	AddressCount string
+}
+
 func pad(value *big.Int) string {
 	return fmt.Sprintf("%0*s", sortKeyWidth, value.String())
 }
@@ -50,6 +66,79 @@ func Parse(input string) (Parsed, bool) {
 	bytes := addr.As16()
 	value := new(big.Int).SetBytes(bytes[:])
 	return Parsed{Canonical: addr.String(), Version: 6, SortKey: pad(value)}, true
+}
+
+func ParsePrefix(input string) (ParsedPrefix, bool) {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(input))
+	if err != nil || prefix.Addr().Zone() != "" {
+		return ParsedPrefix{}, false
+	}
+	prefix = prefix.Masked()
+	start, ok := Parse(prefix.Addr().String())
+	if !ok {
+		return ParsedPrefix{}, false
+	}
+	bits := 128
+	version := 6
+	if prefix.Addr().Is4() {
+		bits, version = 32, 4
+	}
+	if prefix.Bits() < 0 || prefix.Bits() > bits {
+		return ParsedPrefix{}, false
+	}
+	count := new(big.Int).Lsh(big.NewInt(1), uint(bits-prefix.Bits()))
+	endValue := addressValue(start)
+	endValue.Add(endValue, new(big.Int).Sub(count, big.NewInt(1)))
+	end := Parsed{
+		Canonical: SortKeyToIP(pad(addressValueWithMapping(endValue, version)), version),
+		Version:   version,
+		SortKey:   pad(addressValueWithMapping(endValue, version)),
+	}
+	return ParsedPrefix{
+		Canonical:    prefix.String(),
+		Version:      version,
+		PrefixLength: prefix.Bits(),
+		Start:        start,
+		End:          end,
+		AddressCount: count.String(),
+	}, true
+}
+
+func ParseRange(startInput, endInput string) (ParsedRange, bool) {
+	start, ok := Parse(startInput)
+	if !ok {
+		return ParsedRange{}, false
+	}
+	end, ok := Parse(endInput)
+	if !ok || start.Version != end.Version {
+		return ParsedRange{}, false
+	}
+	startValue, endValue := addressValue(start), addressValue(end)
+	if startValue.Cmp(endValue) > 0 {
+		return ParsedRange{}, false
+	}
+	count := new(big.Int).Sub(endValue, startValue)
+	count.Add(count, big.NewInt(1))
+	return ParsedRange{Start: start, End: end, Version: start.Version, AddressCount: count.String()}, true
+}
+
+func addressValue(ip Parsed) *big.Int {
+	value, ok := new(big.Int).SetString(ip.SortKey, 10)
+	if !ok {
+		return new(big.Int)
+	}
+	if ip.Version == 4 {
+		return value.And(value, ipv4Mask)
+	}
+	return value
+}
+
+func addressValueWithMapping(value *big.Int, version int) *big.Int {
+	result := new(big.Int).Set(value)
+	if version == 4 {
+		result.Or(result, ipv4Mapped)
+	}
+	return result
 }
 
 func SortKeyToIP(sortKey string, version int) string {

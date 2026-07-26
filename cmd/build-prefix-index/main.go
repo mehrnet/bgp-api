@@ -18,12 +18,12 @@ type sourceDefinition struct {
 }
 
 type sourceRow struct {
-	rowID              int64
-	start, end         string
-	version            int
-	registry, country  sql.NullString
-	netname, cidr, asn sql.NullString
-	region, city       sql.NullString
+	rowID                                                           int64
+	start, end                                                      string
+	version                                                         int
+	registry, country, netname, cidr, asn, region, city, status     sql.NullString
+	allocationDate, created, lastModified, recordSource, mntBy, org sql.NullString
+	description                                                     sql.NullString
 }
 
 func main() {
@@ -49,16 +49,18 @@ func main() {
 			start_ip_sort TEXT NOT NULL,
 			end_ip_sort TEXT NOT NULL,
 			ip_version INTEGER NOT NULL,
-			registry TEXT, country TEXT, netname TEXT, cidr TEXT, asn TEXT, region TEXT, city TEXT
+			registry TEXT, country TEXT, netname TEXT, cidr TEXT, asn TEXT, region TEXT, city TEXT,
+			status TEXT, allocation_date TEXT, created TEXT, last_modified TEXT,
+			record_source TEXT, mnt_by TEXT, org TEXT, description TEXT
 		);
 	`); err != nil {
 		log.Fatal(err)
 	}
 
 	definitions := []sourceDefinition{
-		{"allocation", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, NULL, NULL, NULL, NULL FROM allocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
-		{"route", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, NULL, NULL, NULL, cidr, asn, NULL, NULL FROM routes WHERE rowid > ? ORDER BY rowid LIMIT ?"},
-		{"geofeed", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, NULL, country, NULL, NULL, NULL, region, city FROM geolocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
+		{"allocation", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, NULL, NULL, NULL, NULL, status, allocation_date, created, last_modified, source, mnt_by, org, descr FROM allocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
+		{"route", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, NULL, NULL, cidr, asn, NULL, NULL, NULL, NULL, NULL, NULL, source, mnt_by, org, descr FROM routes WHERE rowid > ? ORDER BY rowid LIMIT ?"},
+		{"geofeed", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, NULL, country, NULL, NULL, NULL, region, city, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM geolocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
 	}
 	for _, definition := range definitions {
 		if err := materialize(database, definition); err != nil {
@@ -73,6 +75,8 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_alloc_by_end ON allocations(ip_version, end_ip_sort);
 		CREATE INDEX IF NOT EXISTS idx_routes_by_start ON routes(ip_version, start_ip_sort);
 		CREATE INDEX IF NOT EXISTS idx_routes_by_end ON routes(ip_version, end_ip_sort);
+		CREATE INDEX IF NOT EXISTS idx_routes_by_asn ON routes(asn, cidr);
+		CREATE INDEX IF NOT EXISTS idx_autnums_by_asn ON autnums(asn);
 		CREATE INDEX IF NOT EXISTS idx_geo_by_start ON geolocations(ip_version, start_ip_sort);
 		CREATE INDEX IF NOT EXISTS idx_geo_by_end ON geolocations(ip_version, end_ip_sort);
 		CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key);
@@ -93,7 +97,12 @@ func materialize(database *sql.DB, definition sourceDefinition) error {
 		batch := make([]sourceRow, 0, batchSize)
 		for rows.Next() {
 			row := sourceRow{}
-			if err := rows.Scan(&row.rowID, &row.start, &row.end, &row.version, &row.registry, &row.country, &row.netname, &row.cidr, &row.asn, &row.region, &row.city); err != nil {
+			if err := rows.Scan(
+				&row.rowID, &row.start, &row.end, &row.version,
+				&row.registry, &row.country, &row.netname, &row.cidr, &row.asn, &row.region, &row.city,
+				&row.status, &row.allocationDate, &row.created, &row.lastModified,
+				&row.recordSource, &row.mntBy, &row.org, &row.description,
+			); err != nil {
 				rows.Close()
 				return err
 			}
@@ -112,7 +121,7 @@ func materialize(database *sql.DB, definition sourceDefinition) error {
 		if err != nil {
 			return err
 		}
-		insert, err := transaction.Prepare(`INSERT INTO lookup_prefixes (source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		insert, err := transaction.Prepare(`INSERT INTO lookup_prefixes (source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			transaction.Rollback()
 			return err
@@ -125,7 +134,12 @@ func materialize(database *sql.DB, definition sourceDefinition) error {
 				return err
 			}
 			for _, cover := range covers {
-				if _, err := insert.Exec(definition.source, cover.Key, cover.Length, row.start, row.end, row.version, nullValue(row.registry), nullValue(row.country), nullValue(row.netname), nullValue(row.cidr), nullValue(row.asn), nullValue(row.region), nullValue(row.city)); err != nil {
+				if _, err := insert.Exec(
+					definition.source, cover.Key, cover.Length, row.start, row.end, row.version,
+					nullValue(row.registry), nullValue(row.country), nullValue(row.netname), nullValue(row.cidr), nullValue(row.asn), nullValue(row.region), nullValue(row.city),
+					nullValue(row.status), nullValue(row.allocationDate), nullValue(row.created), nullValue(row.lastModified),
+					nullValue(row.recordSource), nullValue(row.mntBy), nullValue(row.org), nullValue(row.description),
+				); err != nil {
 					insert.Close()
 					transaction.Rollback()
 					return err

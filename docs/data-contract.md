@@ -46,6 +46,9 @@ source data are `null`; they are never guessed.
 The producer retains both the point-lookup fields and normalized source
 objects:
 
+Every response is constructed from these imported datasets; the API performs
+no runtime upstream lookups.
+
 | Dataset | Fields retained |
 | --- | --- |
 | `allocations` | IP range, IP version, RIR registry, country, `netname`, `status`, delegated allocation date, RPSL `created`, `last-modified`, `source`, `mnt-by`, `org`, and `descr` |

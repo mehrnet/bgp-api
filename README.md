@@ -27,6 +27,10 @@ connection is from a published Cloudflare address range; otherwise it uses the
 raw peer address. When Cloudflare Pseudo IPv4 overwrites the standard client
 header, the API prefers Cloudflare's preserved IPv6 client header.
 
+Every API response is derived exclusively from the locally imported daily
+dataset. The API makes no runtime requests to RIRs, RDAP, RIPEstat, or any
+other upstream service.
+
 For production, build one static binary:
 
 ```sh

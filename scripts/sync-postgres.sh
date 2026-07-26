@@ -57,7 +57,6 @@ download_release() {
   local expected
   expected="$(awk '$2 ~ /(^|\/)mehrnet_bgp_postgres\.sql\.gz/ { sub(/^.*\//, "", $2); print }' "$release_dir/SHA256SUMS.txt")"
   [ -n "$expected" ] || die "release $tag has no PostgreSQL dump checksum"
-  (cd "$release_dir" && printf '%s\n' "$expected" | sha256sum -c -)
 
   local dump="$release_dir/mehrnet_bgp_postgres.sql.gz"
   if [ ! -f "$dump" ]; then
@@ -67,6 +66,7 @@ download_release() {
     [ "${#parts[@]}" -gt 0 ] || die "release $tag has no PostgreSQL dump"
     cat "${parts[@]}" > "$dump"
   fi
+  (cd "$release_dir" && printf '%s\n' "$expected" | sha256sum -c -)
   printf '%s\n' "$dump"
 }
 

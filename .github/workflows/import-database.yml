@@ -60,7 +60,7 @@ jobs:
       - name: Download RIR data
         run: aria2c -x 16 -s 16 -j 5 --dir=raw_data --input-file=urls.txt
       - name: Parse allocations, routes, and geofeed URLs
-        run: go run scripts/go/parse-rir.go ${{ matrix.rir }}
+        run: go run ./cmd/parse-rir ${{ matrix.rir }}
       - uses: actions/upload-artifact@v4
         with:
           name: data-${{ matrix.rir }}
@@ -78,12 +78,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.3.0"
       - name: Install SQLite
         run: sudo apt-get update && sudo apt-get install -y sqlite3
-      - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -96,7 +92,7 @@ jobs:
           touch artifacts/geofeeds_dummy.txt
           cat artifacts/geofeeds_*.txt | sort -u > final_data/geofeeds.txt
       - name: Fetch geofeeds
-        run: go run scripts/go/fetch-geofeeds.go
+        run: go run ./cmd/fetch-geofeeds
       - name: Build normal SQLite database
         run: |
           sqlite3 mehrnet_bgp.db <<'SQL'
@@ -115,19 +111,19 @@ jobs:
           VACUUM;
           ANALYZE;
           SQL
-          bun run db:validate -- mehrnet_bgp.db
+          go run ./cmd/validate-database mehrnet_bgp.db
       - name: Package normal database
         run: |
           mkdir release
           tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
       - name: Build indexed database
-        run: bun run db:build-prefix-index -- mehrnet_bgp.db
+        run: go run ./cmd/build-prefix-index mehrnet_bgp.db
       - name: Name release dataset
         run: |
           echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
           echo "POSTGRES_SCHEMA=bgp_$(date -u +'%Y%m%d_%H%M')" >> "$GITHUB_ENV"
       - name: Export PostgreSQL COPY dump
-        run: bun scripts/export-postgres.ts mehrnet_bgp.db release/mehrnet_bgp_postgres.sql.gz "$POSTGRES_SCHEMA"
+        run: go run ./cmd/export-postgres -database mehrnet_bgp.db -output release/mehrnet_bgp_postgres.sql.gz -schema "$POSTGRES_SCHEMA"
       - name: Package database artifacts
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db

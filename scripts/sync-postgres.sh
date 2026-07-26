@@ -4,6 +4,7 @@
 set -euo pipefail
 
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
+readonly DATABASE_ROLE="${BGP_API_DATABASE_ROLE:-bgp_api}"
 readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-postgres.XXXXXX")"
 readonly LOOKUP_VIEW_SELECT="source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version::integer AS ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, description"
 readonly ALLOCATION_VIEW_SELECT="id, start_ip_sort, end_ip_sort, ip_version::integer AS ip_version, registry, country, netname, status, allocation_date, created, last_modified, record_source, mnt_by, org, description"
@@ -19,6 +20,8 @@ die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+[[ "$DATABASE_ROLE" =~ ^[a-z_][a-z0-9_]*$ ]] || die "BGP_API_DATABASE_ROLE must be a PostgreSQL role identifier"
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
@@ -143,6 +146,8 @@ CREATE OR REPLACE VIEW public.route_objects AS
   SELECT $ROUTE_VIEW_SELECT FROM "$new_schema".route_objects;
 CREATE OR REPLACE VIEW public.autnums AS
   SELECT $AUTNUM_COLUMNS FROM "$new_schema".autnums;
+GRANT USAGE ON SCHEMA public TO "$DATABASE_ROLE";
+GRANT SELECT ON TABLE public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums TO "$DATABASE_ROLE";
 INSERT INTO public.bgp_api_dataset (singleton, release_tag, dataset_schema, activated_at)
   VALUES (TRUE, '$latest_tag', '$new_schema', now())
   ON CONFLICT (singleton) DO UPDATE

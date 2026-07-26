@@ -4,11 +4,20 @@ export interface ParsedIp {
   sortKey: string;
 }
 
+export interface RangePrefix {
+  key: string;
+  length: number;
+}
+
 const SORT_KEY_WIDTH = 39;
 const IPV4_MAPPED_PREFIX = 0xffffn << 32n;
 
 function padSortKey(value: bigint): string {
   return value.toString(10).padStart(SORT_KEY_WIDTH, "0");
+}
+
+function prefixKey(version: 4 | 6, value: bigint, length: number): string {
+  return `${version}:${padSortKey(value)}/${length}`;
 }
 
 function parseIpv4(input: string): number[] | null {
@@ -123,4 +132,39 @@ export function sortKeyToIp(sortKey: string, version: 4 | 6): string {
   const groups: number[] = [];
   for (let shift = 112n; shift >= 0n; shift -= 16n) groups.push(Number((value >> shift) & 0xffffn));
   return compressIpv6(groups);
+}
+
+export function prefixKeysForIp(ip: ParsedIp): string[] {
+  const bits = ip.version === 4 ? 32 : 128;
+  const addressMask = (1n << BigInt(bits)) - 1n;
+  const address = BigInt(ip.sortKey) & addressMask;
+  const mappedPrefix = ip.version === 4 ? IPV4_MAPPED_PREFIX : 0n;
+  const keys: string[] = [];
+
+  for (let length = bits; length >= 0; length--) {
+    const hostBits = bits - length;
+    const network = hostBits === 0 ? address : address & ~( (1n << BigInt(hostBits)) - 1n );
+    keys.push(prefixKey(ip.version, mappedPrefix | network, length));
+  }
+  return keys;
+}
+
+export function rangeToPrefixes(startIpSort: string, endIpSort: string, version: 4 | 6): RangePrefix[] {
+  const bits = version === 4 ? 32 : 128;
+  const addressMask = (1n << BigInt(bits)) - 1n;
+  const mappedPrefix = version === 4 ? IPV4_MAPPED_PREFIX : 0n;
+  let current = BigInt(startIpSort) & addressMask;
+  const end = BigInt(endIpSort) & addressMask;
+  if (current > end) throw new Error("range start is greater than end");
+
+  const prefixes: RangePrefix[] = [];
+  while (current <= end) {
+    let blockSize = current === 0n ? 1n << BigInt(bits) : current & -current;
+    const remaining = end - current + 1n;
+    while (blockSize > remaining) blockSize >>= 1n;
+    const length = bits - (blockSize.toString(2).length - 1);
+    prefixes.push({ key: prefixKey(version, mappedPrefix | current, length), length });
+    current += blockSize;
+  }
+  return prefixes;
 }

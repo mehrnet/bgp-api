@@ -10,13 +10,26 @@
     }
   ],
   "vars": {
-    "CORS_ALLOWED_ORIGINS_JSON": "[]"
+    "CORS_ALLOWED_ORIGINS_JSON": "[]",
+    "ACTIVE_DATABASE": "primary"
   },
   "d1_databases": [
     {
-      "binding": "BGP_DB",
-      "database_name": "bgp-api",
+      "binding": "BGP_DB_PRIMARY",
+      "database_name": "bgp-api-primary",
       "database_id": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "binding": "BGP_DB_SECONDARY",
+      "database_name": "bgp-api-secondary",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "RL_IP_LOOKUP",
+      "namespace_id": "1101",
+      "simple": { "limit": 120, "period": 60 }
     }
   ]
 }

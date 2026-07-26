@@ -9,7 +9,10 @@ const path = process.env.LOCAL_DB_PATH ?? "./mehrnet_bgp.db";
 const sqlite = new Database(path, { readonly: true });
 const db = drizzle(sqlite, { schema });
 const repository = createIpLookupRepository({ all: (query) => db.all(query) });
-const config = readConfig({ CORS_ALLOWED_ORIGINS_JSON: process.env.CORS_ALLOWED_ORIGINS_JSON });
+const config = readConfig({
+  CORS_ALLOWED_ORIGINS_JSON: process.env.CORS_ALLOWED_ORIGINS_JSON,
+  ACTIVE_DATABASE: process.env.ACTIVE_DATABASE,
+});
 const app = createApiApp(repository, config);
 const port = Number.parseInt(process.env.PORT ?? "3102", 10);
 

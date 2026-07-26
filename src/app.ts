@@ -5,7 +5,14 @@ import type { IpLookupRepository } from "./repository";
 
 export interface AppConfig {
   corsAllowedOrigins: string[];
+  activeDatabase: "primary" | "secondary";
 }
+
+export interface LookupRateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
+const allowAllRateLimiter: LookupRateLimiter = { limit: async () => ({ success: true }) };
 
 function error(code: string, message: string) {
   return errorResponseSchema.parse({ error: { code, message } });
@@ -15,7 +22,7 @@ function allowedOrigin(config: AppConfig, origin: string | undefined): string | 
   return origin && config.corsAllowedOrigins.includes(origin) ? origin : null;
 }
 
-export function createApiApp(repository: IpLookupRepository, config: AppConfig) {
+export function createApiApp(repository: IpLookupRepository, config: AppConfig, lookupRateLimiter: LookupRateLimiter = allowAllRateLimiter) {
   const app = new Hono();
 
   app.use("*", async (c, next) => {
@@ -38,8 +45,15 @@ export function createApiApp(repository: IpLookupRepository, config: AppConfig) 
   });
 
   app.get("/", (c) => c.json({ ok: true, service: "bgp-api", version: 1 }));
-  app.get("/v1/health", (c) => c.json({ ok: true, service: "bgp-api", version: 1 }));
+  app.get("/v1/health", (c) => c.json({ ok: true, service: "bgp-api", version: 1, active_database: config.activeDatabase }));
   app.get("/v1/ip/:ip", async (c) => {
+    const clientIp = c.req.header("cf-connecting-ip") ?? "unknown";
+    const rateLimit = await lookupRateLimiter.limit({ key: clientIp });
+    if (!rateLimit.success) {
+      c.header("Retry-After", "60");
+      return c.json(error("RATE_LIMITED", "too many lookup requests"), 429);
+    }
+
     const input = c.req.param("ip");
     if (!parseIp(input)) return c.json(error("INVALID_IP", "path parameter must be a valid IPv4 or IPv6 address"), 400);
 

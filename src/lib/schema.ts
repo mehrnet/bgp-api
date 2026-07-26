@@ -13,6 +13,7 @@ export const ipLookupResponseSchema = z.object({
     start_ip: nullableString,
     end_ip: nullableString,
     asn: nullableString,
+    asns: z.array(z.string()),
     as_number: z.number().int().positive().nullable(),
     name: nullableString,
     status: nullableString,

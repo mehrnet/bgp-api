@@ -15,6 +15,7 @@ source data are `null`; they are never guessed.
     "start_ip": "1.1.1.0",
     "end_ip": "1.1.1.255",
     "asn": "AS13335",
+    "asns": ["AS13335"],
     "as_number": 13335,
     "name": "apnic-labs",
     "status": null
@@ -61,3 +62,7 @@ backward-compatible migration.
 values such as the RIR's non-ISO "EU # ..." pseudo-country, while
 `country_code` is only set when the source is exactly an ISO-style two-letter
 code.
+
+`network.asns` retains every origin ASN for a most-specific route. `network.asn`
+and `network.as_number` are populated only when that route has one origin;
+they are `null` for a multi-origin route rather than choosing an arbitrary ASN.

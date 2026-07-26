@@ -10,7 +10,8 @@
     "test": "bun test",
     "check": "bun run typecheck && bun run test",
     "deploy:worker": "wrangler deploy",
-    "db:validate": "bun scripts/validate-database.ts"
+    "db:validate": "bun scripts/validate-database.ts",
+    "db:build-prefix-index": "bun scripts/build-prefix-index.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.2",

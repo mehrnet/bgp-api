@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseIp, sortKeyToIp } from "../lib/ip";
+import { parseIp, prefixKeysForIp, rangeToPrefixes, sortKeyToIp } from "../lib/ip";
 
 describe("parseIp", () => {
   test("uses the producer's IPv4-mapped sort key", () => {
@@ -19,5 +19,13 @@ describe("parseIp", () => {
   test("rejects invalid input", () => {
     expect(parseIp("1.1.1.999")).toBeNull();
     expect(parseIp("2001:::1")).toBeNull();
+  });
+
+  test("generates matching keys for an allocation range", () => {
+    const start = "000000000000000000000000281470698586368";
+    const end = "000000000000000000000000281470698586623";
+    const range = rangeToPrefixes(start, end, 4);
+    expect(range).toEqual([{ key: "4:000000000000000000000000281470698586368/24", length: 24 }]);
+    expect(prefixKeysForIp(parseIp("1.1.1.1")!)).toContain(range[0].key);
   });
 });

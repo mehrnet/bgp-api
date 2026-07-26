@@ -2,6 +2,7 @@ import type { AppConfig } from "./app";
 
 export interface RuntimeEnv {
   CORS_ALLOWED_ORIGINS_JSON?: string;
+  ACTIVE_DATABASE?: string;
 }
 
 export function readConfig(env: RuntimeEnv): AppConfig {
@@ -9,8 +10,10 @@ export function readConfig(env: RuntimeEnv): AppConfig {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === "string")) throw new Error("not an array of strings");
-    return { corsAllowedOrigins: parsed };
+    const activeDatabase = env.ACTIVE_DATABASE ?? "primary";
+    if (activeDatabase !== "primary" && activeDatabase !== "secondary") throw new Error("invalid active database");
+    return { corsAllowedOrigins: parsed, activeDatabase };
   } catch {
-    throw new Error("CORS_ALLOWED_ORIGINS_JSON must be a JSON array of origins");
+    throw new Error("invalid runtime configuration");
   }
 }

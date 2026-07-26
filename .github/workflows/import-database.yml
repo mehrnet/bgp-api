@@ -5,7 +5,7 @@ on:
     inputs:
       producer_repository:
         description: GitHub repository that publishes mehrnet_bgp.tar.gz
-        required: true
+        required: false
         type: string
       release_tag:
         description: Release tag to import, or latest
@@ -53,12 +53,34 @@ jobs:
           tar -xzf database/mehrnet_bgp.tar.gz -C database
       - name: Validate source database
         run: bun run db:validate -- database/mehrnet_bgp.db
+      - name: Build prefix lookup index
+        run: bun run db:build-prefix-index -- database/mehrnet_bgp.db
       - name: Convert SQLite database to D1 SQL
-        run: sqlite3 database/mehrnet_bgp.db '.dump allocations routes geolocations' > database/mehrnet_bgp.sql
-      - name: Replace D1 data
-        # This intentionally only imports data. Deploying the Worker remains a
-        # separate, explicit action after the D1 binding is provisioned.
+        run: sqlite3 database/mehrnet_bgp.db '.dump allocations routes geolocations lookup_prefixes' > database/mehrnet_bgp.sql
+      - name: Build secondary database
         run: |
-          bunx wrangler d1 execute BGP_DB --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations;'
-          bunx wrangler d1 execute BGP_DB --remote --file database/mehrnet_bgp.sql
-          bunx wrangler d1 execute BGP_DB --remote --command 'CREATE INDEX IF NOT EXISTS idx_alloc_lookup ON allocations(ip_version, start_ip_sort, end_ip_sort); CREATE INDEX IF NOT EXISTS idx_routes_lookup ON routes(ip_version, start_ip_sort, end_ip_sort); CREATE INDEX IF NOT EXISTS idx_geo_lookup ON geolocations(ip_version, start_ip_sort, end_ip_sort); ANALYZE;'
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file database/mehrnet_bgp.sql
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
+      - name: Validate secondary database
+        run: |
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > database/secondary-validation.json
+          bun -e "const result = JSON.parse(await Bun.file('database/secondary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('secondary database validation failed');"
+      - name: Deploy Worker against secondary
+        run: bunx wrangler deploy --var ACTIVE_DATABASE:secondary
+      - name: Build primary database
+        run: |
+          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
+          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --file database/mehrnet_bgp.sql
+          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'
+      - name: Validate primary database
+        run: |
+          bunx wrangler d1 execute BGP_DB_PRIMARY --remote --json --command 'SELECT (SELECT count(*) FROM allocations) AS allocations, (SELECT count(*) FROM routes) AS routes, (SELECT count(*) FROM geolocations) AS geolocations;' > database/primary-validation.json
+          bun -e "const result = JSON.parse(await Bun.file('database/primary-validation.json').text())[0]?.results?.[0]; if (!result || !result.allocations || !result.routes || !result.geolocations) throw new Error('primary database validation failed');"
+      - name: Deploy Worker against primary
+        run: bunx wrangler deploy --var ACTIVE_DATABASE:primary
+      - name: Rebuild standby secondary database
+        run: |
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'DROP TABLE IF EXISTS allocations; DROP TABLE IF EXISTS routes; DROP TABLE IF EXISTS geolocations; DROP TABLE IF EXISTS lookup_prefixes;'
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --file database/mehrnet_bgp.sql
+          bunx wrangler d1 execute BGP_DB_SECONDARY --remote --command 'CREATE INDEX idx_lookup_prefix ON lookup_prefixes(source, prefix_key); ANALYZE;'

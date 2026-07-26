@@ -14,6 +14,7 @@ const record = ipLookupResponseSchema.parse({
     start_ip: "1.1.1.0",
     end_ip: "1.1.1.255",
     asn: "AS13335",
+    asns: ["AS13335"],
     as_number: 13335,
     name: "apnic-labs",
     status: null,
@@ -33,7 +34,7 @@ const record = ipLookupResponseSchema.parse({
 });
 
 const repository: IpLookupRepository = { lookup: async () => record };
-const app = createApiApp(repository, { corsAllowedOrigins: ["https://app.example.test"] });
+const app = createApiApp(repository, { corsAllowedOrigins: ["https://app.example.test"], activeDatabase: "primary" });
 
 describe("IP lookup route", () => {
   test("returns the public JSON contract", async () => {
@@ -52,5 +53,17 @@ describe("IP lookup route", () => {
     const response = await app.request("https://api.example.test/v1/ip/1.1.1.1", { method: "OPTIONS", headers: { Origin: "https://app.example.test" } });
     expect(response.status).toBe(204);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("https://app.example.test");
+  });
+
+  test("returns 429 when Cloudflare's native limiter rejects the client", async () => {
+    const limitedApp = createApiApp(repository, { corsAllowedOrigins: [], activeDatabase: "secondary" }, {
+      limit: async () => ({ success: false }),
+    });
+    const response = await limitedApp.request("https://api.example.test/v1/ip/1.1.1.1", {
+      headers: { "cf-connecting-ip": "203.0.113.1" },
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("60");
+    expect((await response.json()) as unknown).toEqual({ error: { code: "RATE_LIMITED", message: "too many lookup requests" } });
   });
 });

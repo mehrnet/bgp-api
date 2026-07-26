@@ -25,6 +25,9 @@ No deployment is performed by this project. Before the first Worker deploy:
 1. Create the D1 database: `bunx wrangler d1 create bgp-api`.
 2. Replace the placeholder `database_id` in `wrangler.jsonc` with the returned ID.
 3. Add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets.
+   If the producer is private, add `BGP_DATABASE_READ_TOKEN` with read access
+   to it. Set the `BGP_DATABASE_REPOSITORY` repository variable so the weekly
+   scheduled importer knows which producer release to read.
 4. Run **Import BGP Database** with the repository and release tag that publish
    `mehrnet_bgp.tar.gz`.
 5. Verify `bunx wrangler d1 execute BGP_DB --remote --command 'SELECT count(*) FROM routes'`.

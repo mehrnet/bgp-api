@@ -39,7 +39,7 @@ versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
 stable `public.lookup_prefixes` view, then removes the old schema. The Go API
 keeps serving through the swap without a restart.
 
-It requires `curl`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub
+It requires `curl`, `iconv`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub
 API is sufficient for its daily run; set `BGP_API_GITHUB_TOKEN` only to raise
 the GitHub API rate limit.
 

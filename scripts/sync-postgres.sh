@@ -92,7 +92,7 @@ download_release() {
 }
 
 [ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is required"
-for command in curl gzip jq psql sha256sum; do require_command "$command"; done
+for command in curl gzip iconv jq psql sha256sum; do require_command "$command"; done
 
 initialize_metadata
 release_json="$(github_api "/repos/$REPOSITORY/releases/latest")"
@@ -114,7 +114,9 @@ if [ "$schema_exists" = "t" ]; then
 fi
 
 printf 'importing %s into schema %s\n' "$latest_tag" "$new_schema"
-gzip -dc "$dump" | psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet
+# The producer emits UTF-8. iconv also makes a legacy malformed text field
+# non-fatal without changing valid dump content.
+gzip -dc "$dump" | iconv -f UTF-8 -t UTF-8 -c | psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet
 
 row_count="$(psql_query "SELECT count(*) FROM \"$new_schema\".lookup_prefixes;")"
 [ "$row_count" -gt 0 ] || die "new lookup_prefixes table is empty"

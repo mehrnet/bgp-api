@@ -5,9 +5,7 @@ bgp-api.mehrnet.com {
 	handle @cloudflare {
 		reverse_proxy 127.0.0.1:3102 {
 			header_up X-BGP-API-Origin-Token {env.ORIGIN_AUTH_TOKEN}
-			header_up -X-BGP-API-Cloudflare-IP
 			header_up X-BGP-API-Cloudflare-IP {http.request.header.CF-Connecting-IP}
-			header_up -X-BGP-API-Forwarded-IP
 			header_up X-BGP-API-Forwarded-IP {http.request.remote.host}
 		}
 	}
@@ -15,8 +13,7 @@ bgp-api.mehrnet.com {
 	handle {
 		reverse_proxy 127.0.0.1:3102 {
 			header_up X-BGP-API-Origin-Token {env.ORIGIN_AUTH_TOKEN}
-			header_up -X-BGP-API-Cloudflare-IP
-			header_up -X-BGP-API-Forwarded-IP
+			header_up X-BGP-API-Cloudflare-IP {http.request.remote.host}
 			header_up X-BGP-API-Forwarded-IP {http.request.remote.host}
 		}
 	}

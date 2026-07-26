@@ -15,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mehrnet/bgp-api/internal/api"
-	"github.com/mehrnet/bgp-api/internal/enrichment"
 )
 
 func main() {
@@ -45,9 +44,6 @@ func main() {
 		OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
 		DatabaseEngine:  "postgresql",
 		TrustedProxies:  trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
-	}
-	if environmentBool("ENRICHMENT_ENABLED", true) {
-		config.Enricher = enrichment.New()
 	}
 	handler := api.New(api.NewPostgresRepository(pool), config)
 	server := &http.Server{
@@ -104,18 +100,6 @@ func environmentInt(name string, fallback int) int {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 1 {
 		log.Fatalf("%s must be a positive integer", name)
-	}
-	return parsed
-}
-
-func environmentBool(name string, fallback bool) bool {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		log.Fatalf("%s must be true or false", name)
 	}
 	return parsed
 }

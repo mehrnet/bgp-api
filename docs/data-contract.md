@@ -61,10 +61,6 @@ records by default; use `kind=routes` for overlapping route objects.
 objects. These route objects are registry/IRR records, not a claim that the
 prefix is visible in the global BGP table.
 
-Prefix and ASN responses may include an `enrichment` object. Its RDAP and
-RIPEstat fields are best-effort, server-side cached data and may be absent
-without affecting the authoritative local result.
-
 `registry` is lowercase for API consistency. `country_raw` preserves source
 values such as the RIR's non-ISO "EU # ..." pseudo-country, while
 `country_code` is only set when the source is exactly an ISO-style two-letter

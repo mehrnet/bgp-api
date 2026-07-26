@@ -77,6 +77,16 @@ func TestHandlerLooksUpTrustedCloudflareClientIP(t *testing.T) {
 	}
 }
 
+func TestHandlerIgnoresLegacyEnrichmentParameter(t *testing.T) {
+	handler := New(fakeRepository{}, Config{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip/1.1.1.1?enrich=1", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"enrichment"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerLooksUpTrustedCloudflareIPv6(t *testing.T) {
 	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("::1/128")}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)

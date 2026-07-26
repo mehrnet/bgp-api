@@ -1,14 +1,5 @@
 package api
 
-import "context"
-
-// Enricher adds best-effort, cached data from public RDAP and RIPEstat APIs.
-// A lookup remains complete when either upstream is unavailable.
-type Enricher interface {
-	Prefix(context.Context, string) *PrefixEnrichment
-	ASN(context.Context, uint32) *ASNEnrichment
-}
-
 type PrefixDescriptor struct {
 	CIDR         string `json:"cidr"`
 	Version      int    `json:"version"`
@@ -83,7 +74,6 @@ type PrefixResponse struct {
 	Prefix     PrefixDescriptor  `json:"prefix"`
 	Allocation *AllocationObject `json:"allocation"`
 	Routes     RoutePage         `json:"routes"`
-	Enrichment *PrefixEnrichment `json:"enrichment,omitempty"`
 }
 
 type RangeResponse struct {
@@ -95,11 +85,10 @@ type RangeResponse struct {
 }
 
 type ASNResponse struct {
-	ASN        string         `json:"asn"`
-	ASNumber   int            `json:"as_number"`
-	Autnum     *AutnumObject  `json:"autnum"`
-	Routes     RoutePage      `json:"routes"`
-	Enrichment *ASNEnrichment `json:"enrichment,omitempty"`
+	ASN      string        `json:"asn"`
+	ASNumber int           `json:"as_number"`
+	Autnum   *AutnumObject `json:"autnum"`
+	Routes   RoutePage     `json:"routes"`
 }
 
 type SearchResponse struct {
@@ -107,36 +96,4 @@ type SearchResponse struct {
 	Type       string `json:"type"`
 	Normalized string `json:"normalized"`
 	Endpoint   string `json:"endpoint"`
-}
-
-type PrefixEnrichment struct {
-	RDAP          *RDAPNetwork   `json:"rdap,omitempty"`
-	RoutingStatus *RoutingStatus `json:"routing_status,omitempty"`
-}
-
-type ASNEnrichment struct {
-	RoutingStatus *ASNRoutingStatus `json:"routing_status,omitempty"`
-}
-
-type RDAPNetwork struct {
-	Handle      nullableString `json:"handle"`
-	Name        nullableString `json:"name"`
-	Type        nullableString `json:"type"`
-	StartIP     nullableString `json:"start_ip"`
-	EndIP       nullableString `json:"end_ip"`
-	CountryCode nullableString `json:"country_code"`
-	Status      []string       `json:"status"`
-	Created     nullableString `json:"created"`
-	LastChanged nullableString `json:"last_changed"`
-}
-
-type RoutingStatus struct {
-	FirstSeen nullableString `json:"first_seen"`
-	LastSeen  nullableString `json:"last_seen"`
-	Origins   []string       `json:"origins"`
-}
-
-type ASNRoutingStatus struct {
-	Holder    nullableString `json:"holder"`
-	Announced *bool          `json:"announced"`
 }

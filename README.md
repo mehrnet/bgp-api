@@ -14,16 +14,13 @@ go run ./cmd/bgp-api
 ```
 
 `LISTEN_ADDR` defaults to `127.0.0.1:3102`; `POSTGRES_MAX_CONNECTIONS`
-defaults to `8`. `ENRICHMENT_ENABLED` defaults to `true`; set it to `false` to
-disable cached RDAP and RIPEstat metadata. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
+defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the same
 `X-BGP-API-Origin-Token` header. The API provides `GET /v1/ip/:ip`,
 `GET /v1/me`, `GET /v1/prefix?prefix=:cidr`,
 `GET /v1/range?start=:ip&end=:ip&kind=allocations|routes`,
 `GET /v1/asn/:asn`, `GET /v1/search?q=:query`, and `GET /v1/health`.
 Resource endpoints accept `limit` (1-100) and the `cursor` returned by a
 previous response; responses contain `next_cursor` when a following page exists.
-Add `?enrich=1` to an IP or `/v1/me` lookup to include the same best-effort
-cached RDAP and RIPEstat context returned by CIDR and ASN resources.
 `GET /v1/me` has the identical lookup
 response schema and uses the Cloudflare client address only when the incoming
 connection is from a published Cloudflare address range; otherwise it uses the

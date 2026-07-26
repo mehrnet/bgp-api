@@ -41,7 +41,6 @@ type Config struct {
 	OriginAuthToken string
 	DatabaseEngine  string
 	TrustedProxies  []netip.Prefix
-	Enricher        Enricher
 }
 
 type nullableString = *string
@@ -82,7 +81,6 @@ type LookupResponse struct {
 		Route      bool `json:"route"`
 		Geofeed    bool `json:"geofeed"`
 	} `json:"sources"`
-	Enrichment *PrefixEnrichment `json:"enrichment,omitempty"`
 }
 
 type errorResponse struct {
@@ -122,15 +120,15 @@ func New(repository Repository, config Config) http.Handler {
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/health":
 			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1, "database": config.DatabaseEngine})
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/me":
-			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies), config.Enricher)
+			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies))
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/ip/"):
-			lookupIP(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/ip/"), config.Enricher)
+			lookupIP(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/ip/"))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/prefix":
-			lookupPrefix(writer, request, repository, config.Enricher)
+			lookupPrefix(writer, request, repository)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/range":
 			lookupRange(writer, request, repository)
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/asn/"):
-			lookupASN(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/asn/"), config.Enricher)
+			lookupASN(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/asn/"))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/search":
 			search(writer, request)
 		default:
@@ -147,7 +145,7 @@ func resourceRepository(writer http.ResponseWriter, repository Repository) (Reso
 	return resources, ok
 }
 
-func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository Repository, enricher Enricher) {
+func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository Repository) {
 	resources, ok := resourceRepository(writer, repository)
 	if !ok {
 		return
@@ -170,9 +168,6 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 	if response == nil {
 		writeError(writer, http.StatusNotFound, "PREFIX_NOT_FOUND", "no allocation or route object matched this prefix")
 		return
-	}
-	if enricher != nil {
-		response.Enrichment = enricher.Prefix(request.Context(), prefix.Canonical)
 	}
 	writeJSON(writer, http.StatusOK, response)
 }
@@ -209,7 +204,7 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 	writeJSON(writer, http.StatusOK, response)
 }
 
-func lookupASN(writer http.ResponseWriter, request *http.Request, repository Repository, input string, enricher Enricher) {
+func lookupASN(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
 	resources, ok := resourceRepository(writer, repository)
 	if !ok {
 		return
@@ -232,9 +227,6 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 	if response == nil {
 		writeError(writer, http.StatusNotFound, "ASN_NOT_FOUND", "no route or aut-num object matched this ASN")
 		return
-	}
-	if enricher != nil {
-		response.Enrichment = enricher.ASN(request.Context(), asn)
 	}
 	writeJSON(writer, http.StatusOK, response)
 }
@@ -291,7 +283,7 @@ func parseASN(input string) (uint32, bool) {
 	return uint32(number), true
 }
 
-func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string, enricher Enricher) {
+func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
 	ip, ok := ipkey.Parse(input)
 	if !ok {
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "path parameter must be a valid IPv4 or IPv6 address")
@@ -306,19 +298,7 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		writeError(writer, http.StatusNotFound, "IP_NOT_FOUND", "no RIR allocation, route, or geofeed record matched this IP")
 		return
 	}
-	if enricher != nil && wantsEnrichment(request) {
-		bits := 128
-		if ip.Version == 4 {
-			bits = 32
-		}
-		response.Enrichment = enricher.Prefix(request.Context(), ip.Canonical+"/"+strconv.Itoa(bits))
-	}
 	writeJSON(writer, http.StatusOK, response)
-}
-
-func wantsEnrichment(request *http.Request) bool {
-	value := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("enrich")))
-	return value == "1" || value == "true"
 }
 
 func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {

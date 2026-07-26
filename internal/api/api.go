@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -162,6 +163,7 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 	}
 	response, err := resources.LookupPrefix(request.Context(), prefix, page)
 	if err != nil {
+		log.Printf("prefix lookup failed for %s: %v", prefix.Canonical, err)
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected prefix lookup failure")
 		return
 	}
@@ -200,6 +202,7 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 	}
 	response, err := resources.LookupRange(request.Context(), rangeValue, kind, page)
 	if err != nil {
+		log.Printf("range lookup failed for %s-%s: %v", rangeValue.Start.Canonical, rangeValue.End.Canonical, err)
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected range lookup failure")
 		return
 	}
@@ -222,6 +225,7 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 	}
 	response, err := resources.LookupASN(request.Context(), asn, page)
 	if err != nil {
+		log.Printf("ASN lookup failed for AS%d: %v", asn, err)
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected ASN lookup failure")
 		return
 	}

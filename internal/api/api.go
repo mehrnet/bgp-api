@@ -15,7 +15,7 @@ import (
 )
 
 type Repository interface {
-	Lookup(context.Context, ipkey.Parsed) (*LookupResponse, error)
+	Lookup(context.Context, ipkey.Parsed, LookupOptions) (*LookupResponse, error)
 }
 
 type MetadataRepository interface {
@@ -38,6 +38,17 @@ type RangeKind string
 const (
 	RangeAllocations RangeKind = "allocations"
 	RangeRoutes      RangeKind = "routes"
+)
+
+type LookupOptions struct {
+	Details LookupDetailsMode
+}
+
+type LookupDetailsMode string
+
+const (
+	LookupDetailsNone LookupDetailsMode = ""
+	LookupDetailsFull LookupDetailsMode = "full"
 )
 
 type Config struct {
@@ -88,6 +99,37 @@ type LookupResponse struct {
 		Route      bool `json:"route"`
 		Geofeed    bool `json:"geofeed"`
 	} `json:"sources"`
+	Details *LookupDetails `json:"details,omitempty"`
+}
+
+type LookupDetails struct {
+	Allocations []LookupDetailRecord `json:"allocations,omitempty"`
+	Routes      []LookupDetailRecord `json:"routes,omitempty"`
+	Geofeeds    []LookupDetailRecord `json:"geofeeds,omitempty"`
+}
+
+type LookupDetailRecord struct {
+	StartIP        string         `json:"start_ip"`
+	EndIP          string         `json:"end_ip"`
+	Version        int            `json:"version"`
+	Registry       nullableString `json:"registry,omitempty"`
+	CountryCode    nullableString `json:"country_code,omitempty"`
+	CountryRaw     nullableString `json:"country_raw,omitempty"`
+	Name           nullableString `json:"name,omitempty"`
+	CIDR           nullableString `json:"cidr,omitempty"`
+	ASN            nullableString `json:"asn,omitempty"`
+	ASNumber       *int           `json:"as_number,omitempty"`
+	Region         nullableString `json:"region,omitempty"`
+	City           nullableString `json:"city,omitempty"`
+	Status         nullableString `json:"status,omitempty"`
+	AllocationDate nullableString `json:"allocation_date,omitempty"`
+	Created        nullableString `json:"created,omitempty"`
+	LastModified   nullableString `json:"last_modified,omitempty"`
+	Source         nullableString `json:"source,omitempty"`
+	Maintainers    nullableString `json:"maintainers,omitempty"`
+	Organization   nullableString `json:"organization,omitempty"`
+	AbuseContact   nullableString `json:"abuse_contact,omitempty"`
+	Description    nullableString `json:"description,omitempty"`
 }
 
 type ResponseMeta struct {
@@ -336,7 +378,11 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "path parameter must be a valid IPv4 or IPv6 address")
 		return
 	}
-	response, err := repository.Lookup(request.Context(), ip)
+	options, ok := lookupOptions(writer, request)
+	if !ok {
+		return
+	}
+	response, err := repository.Lookup(request.Context(), ip, options)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected lookup failure")
 		return
@@ -349,6 +395,18 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func lookupOptions(writer http.ResponseWriter, request *http.Request) (LookupOptions, bool) {
+	rawDetails := strings.TrimSpace(request.URL.Query().Get("details"))
+	if rawDetails == "" {
+		return LookupOptions{}, true
+	}
+	if rawDetails != string(LookupDetailsFull) {
+		writeError(writer, http.StatusBadRequest, "INVALID_DETAILS", "details must be full when present")
+		return LookupOptions{}, false
+	}
+	return LookupOptions{Details: LookupDetailsFull}, true
 }
 
 func attachMeta(writer http.ResponseWriter, request *http.Request, repository Repository, response any) bool {
@@ -468,7 +526,7 @@ type LookupCandidate struct {
 	Description    nullableString
 }
 
-func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCandidate) *LookupResponse {
+func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCandidate, options LookupOptions) *LookupResponse {
 	allocation := narrowest(allocations)
 	bestRoutes := allNarrowest(routes)
 	geolocation := narrowest(geolocations)
@@ -527,7 +585,48 @@ func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCa
 	response.Sources.Allocation = allocation != nil
 	response.Sources.Route = len(bestRoutes) > 0
 	response.Sources.Geofeed = geolocation != nil
+	if options.Details == LookupDetailsFull {
+		response.Details = &LookupDetails{
+			Allocations: detailRecords(allocations, ip.Version),
+			Routes:      detailRecords(routes, ip.Version),
+			Geofeeds:    detailRecords(geolocations, ip.Version),
+		}
+	}
 	return response
+}
+
+func detailRecords(candidates []LookupCandidate, version int) []LookupDetailRecord {
+	if len(candidates) == 0 {
+		return nil
+	}
+	records := make([]LookupDetailRecord, 0, len(candidates))
+	for _, candidate := range candidates {
+		record := LookupDetailRecord{
+			StartIP:        ipkey.SortKeyToIP(candidate.StartIPSort, version),
+			EndIP:          ipkey.SortKeyToIP(candidate.EndIPSort, version),
+			Version:        candidate.IPVersion,
+			Registry:       lower(candidate.Registry),
+			CountryRaw:     upper(candidate.Country),
+			Name:           present(candidate.Netname),
+			CIDR:           present(candidate.CIDR),
+			ASN:            upper(candidate.ASN),
+			Region:         present(candidate.Region),
+			City:           present(candidate.City),
+			Status:         present(candidate.Status),
+			AllocationDate: present(candidate.AllocationDate),
+			Created:        present(candidate.Created),
+			LastModified:   present(candidate.LastModified),
+			Source:         present(candidate.RecordSource),
+			Maintainers:    present(candidate.MntBy),
+			Organization:   present(candidate.Org),
+			AbuseContact:   present(candidate.AbuseContact),
+			Description:    present(candidate.Description),
+		}
+		record.CountryCode = countryCode(record.CountryRaw)
+		record.ASNumber = asNumber(record.ASN)
+		records = append(records, record)
+	}
+	return records
 }
 
 func nullable(candidate *LookupCandidate, selectValue func(LookupCandidate) nullableString) nullableString {

@@ -21,7 +21,7 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
-func (repository *PostgresRepository) Lookup(ctx context.Context, ip ipkey.Parsed) (*LookupResponse, error) {
+func (repository *PostgresRepository) Lookup(ctx context.Context, ip ipkey.Parsed, options LookupOptions) (*LookupResponse, error) {
 	keys := ipkey.PrefixKeysForIP(ip)
 	batch := &pgx.Batch{}
 	for _, source := range []string{"allocation", "route", "geofeed"} {
@@ -50,7 +50,7 @@ func (repository *PostgresRepository) Lookup(ctx context.Context, ip ipkey.Parse
 	if err != nil {
 		return nil, err
 	}
-	return BuildResponse(ip, allocations, routes, geolocations), nil
+	return BuildResponse(ip, allocations, routes, geolocations, options), nil
 }
 
 func readCandidates(results pgx.BatchResults) ([]LookupCandidate, error) {

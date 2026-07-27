@@ -13,9 +13,12 @@ import (
 
 type fakeRepository struct{}
 
-func (fakeRepository) Lookup(_ context.Context, ip ipkey.Parsed) (*LookupResponse, error) {
+func (fakeRepository) Lookup(_ context.Context, ip ipkey.Parsed, options LookupOptions) (*LookupResponse, error) {
 	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
 	response.Network.ASNs = []string{}
+	if options.Details == LookupDetailsFull {
+		response.Details = &LookupDetails{Allocations: []LookupDetailRecord{{StartIP: "1.1.1.0", EndIP: "1.1.1.255", Version: 4}}}
+	}
 	return response, nil
 }
 
@@ -104,6 +107,26 @@ func TestHandlerIgnoresLegacyEnrichmentParameter(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"enrichment"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerReturnsFullLookupDetails(t *testing.T) {
+	handler := New(fakeRepository{}, Config{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip/1.1.1.1?details=full", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"details":{"allocations":[`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerRejectsInvalidDetailsMode(t *testing.T) {
+	handler := New(fakeRepository{}, Config{})
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip/1.1.1.1?details=raw", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_DETAILS"`) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }

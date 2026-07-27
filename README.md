@@ -5,6 +5,9 @@ The service is a Go HTTP server using `pgx` and PostgreSQL. Cloudflare is used
 as a proxied DNS, TLS, WAF, and optional edge-cache layer; it does not run the
 application or store the database.
 
+The public static frontend for `https://bgp.mehrnet.com` is maintained in
+[`mehrnet/bgp`](https://github.com/mehrnet/bgp).
+
 ## Run the API
 
 ```sh

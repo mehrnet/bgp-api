@@ -169,12 +169,18 @@ func (repository *PostgresRepository) LookupASN(ctx context.Context, asn uint32,
 		return nil, err
 	}
 	rows, err := repository.pool.Query(ctx, `
-		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+		WITH page AS MATERIALIZED (
+			SELECT id
+			FROM route_objects
+			WHERE asn_number = $1 AND id > $2
+			ORDER BY asn_number, id
+			LIMIT $3
+		)
+		SELECT route_objects.id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
 		       to_jsonb(route_objects)->>'abuse_contact', description, ''
 		FROM route_objects
-		WHERE asn_number = $1 AND id > $2
-		ORDER BY id
-		LIMIT $3
+		JOIN page USING (id)
+		ORDER BY route_objects.id
 	`, asn, page.Cursor, page.Limit+1)
 	if err != nil {
 		return nil, fmt.Errorf("query route objects by ASN: %w", err)

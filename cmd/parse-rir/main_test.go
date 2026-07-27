@@ -31,6 +31,7 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		"source: TEST # Filtered",
 		"mnt-by: TEST-MNT",
 		"org: ORG-TEST",
+		"abuse-c: ABUSE-TEST",
 		"descr: Example allocation",
 		"geofeed: https://example.test/geofeed.csv",
 	}, "TEST", allocations, routes, autnums, geoFile)
@@ -39,7 +40,7 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields := strings.Split(strings.TrimSpace(allocationOutput.String()), ",")
-	if len(fields) != 14 || fields[5] != "TEST-NET" || fields[6] != "ASSIGNED PA" || fields[8] != "2024-01-02T03:04:05Z" || fields[10] != "TEST" {
+	if len(fields) != 15 || fields[5] != "TEST-NET" || fields[6] != "ASSIGNED PA" || fields[8] != "2024-01-02T03:04:05Z" || fields[10] != "TEST" || fields[13] != "ABUSE-TEST" {
 		t.Fatalf("allocation fields = %#v", fields)
 	}
 
@@ -48,6 +49,7 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		"origin: AS64500",
 		"source: TEST",
 		"mnt-by: TEST-MNT",
+		"abuse-mailbox: abuse@example.test",
 		"descr: Example route",
 	}, "TEST", allocations, routes, autnums, geoFile)
 	routes.Flush()
@@ -55,7 +57,7 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields = strings.Split(strings.TrimSpace(routeOutput.String()), ",")
-	if len(fields) != 10 || fields[4] != "AS64500" || fields[7] != "TEST-MNT" {
+	if len(fields) != 11 || fields[4] != "AS64500" || fields[7] != "TEST-MNT" || fields[9] != "abuse@example.test" {
 		t.Fatalf("route fields = %#v", fields)
 	}
 
@@ -64,6 +66,7 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		"as-name: TEST-AS",
 		"country: AU",
 		"source: TEST",
+		"abuse-c: ABUSE-AS",
 		"descr: Example autonomous system",
 	}, "TEST", allocations, routes, autnums, geoFile)
 	autnums.Flush()
@@ -71,7 +74,7 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields = strings.Split(strings.TrimSpace(autnumOutput.String()), ",")
-	if len(fields) != 11 || fields[0] != "AS64500" || fields[3] != "TEST-AS" {
+	if len(fields) != 12 || fields[0] != "AS64500" || fields[3] != "TEST-AS" || fields[10] != "ABUSE-AS" {
 		t.Fatalf("autnum fields = %#v", fields)
 	}
 }

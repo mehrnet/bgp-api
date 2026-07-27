@@ -5,6 +5,14 @@ source data are `null`; they are never guessed.
 
 ```json
 {
+  "meta": {
+    "dataset": {
+      "release_tag": "db-2026.07.27-0400-1",
+      "built_at": "2026-07-27T04:00:00Z",
+      "activated_at": "2026-07-27 05:00:00+00",
+      "source_commit": "0123456789abcdef"
+    }
+  },
   "ip": "1.1.1.1",
   "version": 4,
   "registry": "apnic",
@@ -18,7 +26,8 @@ source data are `null`; they are never guessed.
     "asns": ["AS13335"],
     "as_number": 13335,
     "name": "apnic-labs",
-    "status": null
+    "status": null,
+    "abuse_contact": null
   },
   "allocation": {
     "start_ip": "1.1.1.0",
@@ -28,7 +37,8 @@ source data are `null`; they are never guessed.
     "country_raw": "AU",
     "name": "apnic-labs",
     "allocation_date": null,
-    "status": null
+    "status": null,
+    "abuse_contact": null
   },
   "location": {
     "country_code": "AU",
@@ -49,11 +59,17 @@ objects:
 Every response is constructed from these imported datasets; the API performs
 no runtime upstream lookups.
 
+Successful lookup/resource responses include `meta.dataset`. `release_tag`
+identifies the GitHub release, `built_at` is the producer timestamp,
+`activated_at` is when the server sync made the dataset active, and
+`source_commit` is the producer repository commit used for the build. These
+fields may be `null` only for old local fixtures or pre-metadata datasets.
+
 | Dataset | Fields retained |
 | --- | --- |
-| `allocations` | IP range, IP version, RIR registry, country, `netname`, `status`, delegated allocation date, RPSL `created`, `last-modified`, `source`, `mnt-by`, `org`, and `descr` |
-| `routes` | IP range, IP version, route CIDR, origin ASN, RIR registry, RPSL `source`, `mnt-by`, `org`, and `descr` |
-| `autnums` | RPSL `aut-num`, `as-name`, country, status, provenance, maintainer, organization, and description |
+| `allocations` | IP range, IP version, RIR registry, country, `netname`, `status`, delegated allocation date, RPSL `created`, `last-modified`, `source`, `mnt-by`, `org`, direct `abuse-c`/`abuse-mailbox`, and `descr` |
+| `routes` | IP range, IP version, route CIDR, origin ASN, RIR registry, RPSL `source`, `mnt-by`, `org`, direct `abuse-c`/`abuse-mailbox`, and `descr` |
+| `autnums` | RPSL `aut-num`, `as-name`, country, status, provenance, maintainer, organization, direct `abuse-c`/`abuse-mailbox`, and description |
 | `geolocations` | IP range, IP version, country, region, city from geofeeds |
 
 `GET /v1/prefix?prefix=:cidr` returns a normalized CIDR descriptor, its

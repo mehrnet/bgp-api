@@ -166,6 +166,7 @@ func processRPSLBlock(lines []string, registry string, allocations, routes, autn
 		source:       sourceName(first("source")),
 		mntBy:        joinAttributes(attributes["mnt-by"]),
 		org:          first("org"),
+		abuseContact: firstNonEmpty(joinAttributes(attributes["abuse-c"]), joinAttributes(attributes["abuse-mailbox"])),
 		description:  joinAttributes(attributes["descr"]),
 	}
 
@@ -194,13 +195,13 @@ func processRPSLBlock(lines []string, registry string, allocations, routes, autn
 	if asn := first("aut-num"); asn != "" {
 		_ = autnums.Write([]string{
 			strings.ToUpper(asn), registry, metadata.country, first("as-name"), metadata.org,
-			metadata.status, metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.description,
+			metadata.status, metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.abuseContact, metadata.description,
 		})
 	}
 }
 
 type rpslMetadata struct {
-	country, status, created, lastModified, source, mntBy, org, description string
+	country, status, created, lastModified, source, mntBy, org, abuseContact, description string
 }
 
 func rpslAttribute(line string) (string, string, bool) {
@@ -242,6 +243,16 @@ func joinAttributes(values []string) string {
 	return strings.Join(result, " | ")
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func sourceName(value string) string {
 	fields := strings.Fields(value)
 	if len(fields) == 0 {
@@ -256,7 +267,7 @@ func writeAllocation(writer *csv.Writer, start, end string, version int, registr
 	}
 	_ = writer.Write([]string{
 		start, end, fmt.Sprintf("%d", version), registry, metadata.country, netname, metadata.status, allocationDate,
-		metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.org, metadata.description,
+		metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.org, metadata.abuseContact, metadata.description,
 	})
 }
 
@@ -270,7 +281,7 @@ func writeRoute(writer *csv.Writer, cidr string, version int, asn, registry stri
 	}
 	_ = writer.Write([]string{
 		start, end, fmt.Sprintf("%d", version), cidr, strings.ToUpper(asn), registry,
-		metadata.source, metadata.mntBy, metadata.org, metadata.description,
+		metadata.source, metadata.mntBy, metadata.org, metadata.abuseContact, metadata.description,
 	})
 }
 

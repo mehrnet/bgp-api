@@ -19,6 +19,14 @@ func (fakeRepository) Lookup(_ context.Context, ip ipkey.Parsed) (*LookupRespons
 	return response, nil
 }
 
+func (fakeRepository) DatasetMetadata(context.Context) (*DatasetMetadata, error) {
+	releaseTag := "db-2026.07.27-0400-1"
+	builtAt := "2026-07-27T04:00:00Z"
+	activatedAt := "2026-07-27 05:00:00+00"
+	sourceCommit := "0123456789abcdef"
+	return &DatasetMetadata{ReleaseTag: &releaseTag, BuiltAt: &builtAt, ActivatedAt: &activatedAt, SourceCommit: &sourceCommit}, nil
+}
+
 type resourceFakeRepository struct{ fakeRepository }
 
 func (resourceFakeRepository) LookupPrefix(_ context.Context, prefix ipkey.ParsedPrefix, _ Page) (*PrefixResponse, error) {
@@ -65,6 +73,16 @@ func TestHandlerRequiresOriginToken(t *testing.T) {
 	}
 }
 
+func TestHealthIncludesDatasetMetadata(t *testing.T) {
+	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql"})
+	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"release_tag":"db-2026.07.27-0400-1"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerLooksUpTrustedCloudflareClientIP(t *testing.T) {
 	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
@@ -74,6 +92,9 @@ func TestHandlerLooksUpTrustedCloudflareClientIP(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"185.227.108.163"`) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"meta":{"dataset":`) {
+		t.Fatalf("missing dataset meta: %s", response.Body.String())
 	}
 }
 

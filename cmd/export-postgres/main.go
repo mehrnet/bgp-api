@@ -29,6 +29,9 @@ func main() {
 	databasePath := flag.String("database", "", "indexed SQLite database")
 	outputPath := flag.String("output", "", "PostgreSQL dump .sql.gz")
 	schema := flag.String("schema", "", "destination PostgreSQL schema")
+	releaseTag := flag.String("release-tag", "", "release tag for dataset metadata")
+	builtAt := flag.String("built-at", "", "UTC build timestamp for dataset metadata")
+	sourceCommit := flag.String("source-commit", "", "producer source commit for dataset metadata")
 	flag.Parse()
 	if *databasePath == "" || *outputPath == "" || !schemaPattern.MatchString(*schema) {
 		log.Fatal("usage: go run ./cmd/export-postgres -database mehrnet_bgp.db -output release/mehrnet_bgp_postgres.sql.gz -schema bgp_YYYYMMDD_HHMM")
@@ -60,28 +63,29 @@ func main() {
 
 	fmt.Fprintf(writer, "SET client_encoding = 'UTF8';\nCREATE SCHEMA %s;\n", *schema)
 	writeSchema(writer, *schema)
+	writeDatasetMetadata(writer, *schema, *releaseTag, *builtAt, *sourceCommit)
 
 	exports := []tableExport{
 		{
 			name:    "lookup_prefixes",
-			columns: []string{"source", "prefix_key", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "cidr", "asn", "region", "city", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "description"},
-			query:   "SELECT source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, description FROM lookup_prefixes",
+			columns: []string{"source", "prefix_key", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "cidr", "asn", "region", "city", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+			query:   "SELECT source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description FROM lookup_prefixes",
 		},
 		{
 			name:    "allocation_objects",
-			columns: []string{"start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "description"},
-			query:   "SELECT start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date, created, last_modified, source, mnt_by, org, descr FROM allocations",
+			columns: []string{"start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+			query:   "SELECT start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date, created, last_modified, source, mnt_by, org, abuse_contact, descr FROM allocations",
 		},
 		{
 			name:    "route_objects",
-			columns: []string{"prefix", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "origin_asn", "asn_number", "registry", "record_source", "mnt_by", "org", "description"},
-			query:   "SELECT cidr, start_ip_sort, end_ip_sort, ip_version, asn, registry, source, mnt_by, org, descr FROM routes",
+			columns: []string{"prefix", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "origin_asn", "asn_number", "registry", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+			query:   "SELECT cidr, start_ip_sort, end_ip_sort, ip_version, asn, registry, source, mnt_by, org, abuse_contact, descr FROM routes",
 			mapRow:  routeObjectRow,
 		},
 		{
 			name:    "autnums",
-			columns: []string{"asn", "asn_number", "registry", "country", "as_name", "org", "status", "created", "last_modified", "record_source", "mnt_by", "description"},
-			query:   "SELECT asn, registry, country, as_name, org, status, created, last_modified, source, mnt_by, descr FROM autnums",
+			columns: []string{"asn", "asn_number", "registry", "country", "as_name", "org", "status", "created", "last_modified", "record_source", "mnt_by", "abuse_contact", "description"},
+			query:   "SELECT asn, registry, country, as_name, org, status, created, last_modified, source, mnt_by, abuse_contact, descr FROM autnums",
 			mapRow:  autnumRow,
 		},
 	}
@@ -102,27 +106,35 @@ CREATE TABLE %s.lookup_prefixes (
   start_ip_sort TEXT NOT NULL, end_ip_sort TEXT NOT NULL, ip_version SMALLINT NOT NULL,
   registry TEXT, country TEXT, netname TEXT, cidr TEXT, asn TEXT, region TEXT, city TEXT,
   status TEXT, allocation_date TEXT, created TEXT, last_modified TEXT,
-  record_source TEXT, mnt_by TEXT, org TEXT, description TEXT
+  record_source TEXT, mnt_by TEXT, org TEXT, abuse_contact TEXT, description TEXT
 );
 CREATE TABLE %s.allocation_objects (
   id BIGSERIAL PRIMARY KEY,
   start_ip_sort TEXT NOT NULL, end_ip_sort TEXT NOT NULL, ip_version SMALLINT NOT NULL,
   registry TEXT, country TEXT, netname TEXT, status TEXT, allocation_date TEXT,
-  created TEXT, last_modified TEXT, record_source TEXT, mnt_by TEXT, org TEXT, description TEXT
+  created TEXT, last_modified TEXT, record_source TEXT, mnt_by TEXT, org TEXT, abuse_contact TEXT, description TEXT
 );
 CREATE TABLE %s.route_objects (
   id BIGSERIAL PRIMARY KEY,
   prefix CIDR NOT NULL, prefix_length SMALLINT NOT NULL,
   start_ip_sort TEXT NOT NULL, end_ip_sort TEXT NOT NULL, ip_version SMALLINT NOT NULL,
   origin_asn TEXT NOT NULL, asn_number BIGINT,
-  registry TEXT, record_source TEXT, mnt_by TEXT, org TEXT, description TEXT
+  registry TEXT, record_source TEXT, mnt_by TEXT, org TEXT, abuse_contact TEXT, description TEXT
 );
 CREATE TABLE %s.autnums (
   id BIGSERIAL PRIMARY KEY,
   asn TEXT NOT NULL, asn_number BIGINT, registry TEXT, country TEXT, as_name TEXT,
-  org TEXT, status TEXT, created TEXT, last_modified TEXT, record_source TEXT, mnt_by TEXT, description TEXT
+  org TEXT, status TEXT, created TEXT, last_modified TEXT, record_source TEXT, mnt_by TEXT, abuse_contact TEXT, description TEXT
 );
-`, schema, schema, schema, schema)
+CREATE TABLE %s.dataset_metadata (
+  release_tag TEXT, built_at TEXT, source_commit TEXT
+);
+`, schema, schema, schema, schema, schema)
+}
+
+func writeDatasetMetadata(writer *bufio.Writer, schema, releaseTag, builtAt, sourceCommit string) {
+	fmt.Fprintf(writer, "COPY %s.dataset_metadata (release_tag, built_at, source_commit) FROM STDIN WITH (FORMAT text);\n", schema)
+	fmt.Fprintf(writer, "%s\t%s\t%s\n\\.\n", copyNullable(releaseTag), copyNullable(builtAt), copyNullable(sourceCommit))
 }
 
 func writeIndexes(writer *bufio.Writer, schema string) {
@@ -154,9 +166,9 @@ func copyTable(database *sql.DB, writer *bufio.Writer, schema string, export tab
 		if export.mapRow != nil {
 			switch export.name {
 			case "route_objects":
-				inputLength = 10
-			case "autnums":
 				inputLength = 11
+			case "autnums":
+				inputLength = 12
 			}
 		}
 		input := make([]sql.NullString, inputLength)
@@ -197,7 +209,7 @@ func copyTable(database *sql.DB, writer *bufio.Writer, schema string, export tab
 }
 
 func routeObjectRow(input []sql.NullString) ([]sql.NullString, error) {
-	if len(input) != 10 || !input[0].Valid || !input[4].Valid {
+	if len(input) != 11 || !input[0].Valid || !input[4].Valid {
 		return nil, fmt.Errorf("invalid route row")
 	}
 	prefix, err := netip.ParsePrefix(strings.TrimSpace(input[0].String))
@@ -208,16 +220,16 @@ func routeObjectRow(input []sql.NullString) ([]sql.NullString, error) {
 	return []sql.NullString{
 		{String: prefix.Masked().String(), Valid: true},
 		{String: strconv.Itoa(prefix.Bits()), Valid: true},
-		input[1], input[2], input[3], input[4], asnNumber, input[5], input[6], input[7], input[8], input[9],
+		input[1], input[2], input[3], input[4], asnNumber, input[5], input[6], input[7], input[8], input[9], input[10],
 	}, nil
 }
 
 func autnumRow(input []sql.NullString) ([]sql.NullString, error) {
-	if len(input) != 11 || !input[0].Valid {
+	if len(input) != 12 || !input[0].Valid {
 		return nil, fmt.Errorf("invalid autnum row")
 	}
 	return []sql.NullString{
-		input[0], nullableASN(input[0]), input[1], input[2], input[3], input[4], input[5], input[6], input[7], input[8], input[9], input[10],
+		input[0], nullableASN(input[0]), input[1], input[2], input[3], input[4], input[5], input[6], input[7], input[8], input[9], input[10], input[11],
 	}, nil
 }
 
@@ -240,4 +252,11 @@ func copyValue(value string) string {
 	value = strings.ReplaceAll(value, "\t", `\t`)
 	value = strings.ReplaceAll(value, "\n", `\n`)
 	return strings.ReplaceAll(value, "\r", `\r`)
+}
+
+func copyNullable(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return `\N`
+	}
+	return copyValue(value)
 }

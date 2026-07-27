@@ -104,15 +104,15 @@ jobs:
           PRAGMA journal_mode = MEMORY;
           CREATE TABLE allocations (
             start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, registry TEXT, country TEXT, netname TEXT,
-            status TEXT, allocation_date TEXT, created TEXT, last_modified TEXT, source TEXT, mnt_by TEXT, org TEXT, descr TEXT
+            status TEXT, allocation_date TEXT, created TEXT, last_modified TEXT, source TEXT, mnt_by TEXT, org TEXT, abuse_contact TEXT, descr TEXT
           );
           CREATE TABLE routes (
             start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, cidr TEXT, asn TEXT, registry TEXT,
-            source TEXT, mnt_by TEXT, org TEXT, descr TEXT
+            source TEXT, mnt_by TEXT, org TEXT, abuse_contact TEXT, descr TEXT
           );
           CREATE TABLE autnums (
             asn TEXT, registry TEXT, country TEXT, as_name TEXT, org TEXT, status TEXT,
-            created TEXT, last_modified TEXT, source TEXT, mnt_by TEXT, descr TEXT
+            created TEXT, last_modified TEXT, source TEXT, mnt_by TEXT, abuse_contact TEXT, descr TEXT
           );
           CREATE TABLE geolocations (start_ip_sort TEXT, end_ip_sort TEXT, ip_version INTEGER, country TEXT, region TEXT, city TEXT);
           .mode csv
@@ -140,10 +140,14 @@ jobs:
         run: go run ./cmd/build-prefix-index mehrnet_bgp.db
       - name: Name release dataset
         run: |
-          echo "DATA_TAG=$(date -u +'%Y.%m.%d-%H%M')" >> "$GITHUB_ENV"
-          echo "POSTGRES_SCHEMA=bgp_$(date -u +'%Y%m%d_%H%M')" >> "$GITHUB_ENV"
+          data_tag="$(date -u +'%Y.%m.%d-%H%M')"
+          schema_tag="$(date -u +'%Y%m%d_%H%M')"
+          echo "DATA_TAG=$data_tag" >> "$GITHUB_ENV"
+          echo "POSTGRES_SCHEMA=bgp_$schema_tag" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=db-${data_tag}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "DATASET_BUILT_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
       - name: Export PostgreSQL COPY dump
-        run: go run ./cmd/export-postgres -database mehrnet_bgp.db -output release/mehrnet_bgp_postgres.sql.gz -schema "$POSTGRES_SCHEMA"
+        run: go run ./cmd/export-postgres -database mehrnet_bgp.db -output release/mehrnet_bgp_postgres.sql.gz -schema "$POSTGRES_SCHEMA" -release-tag "$RELEASE_TAG" -built-at "$DATASET_BUILT_AT" -source-commit "$GITHUB_SHA"
       - name: Package database artifacts
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
@@ -162,7 +166,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "db-${DATA_TAG}-${GITHUB_RUN_NUMBER}" release/* \
+          gh release create "$RELEASE_TAG" release/* \
             --title "MehrNet BGP Database - ${DATA_TAG}" \
           --notes "Assets:
           - mehrnet_bgp.tar.gz: normal database.

@@ -21,6 +21,9 @@ defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the
 `GET /v1/asn/:asn`, `GET /v1/search?q=:query`, and `GET /v1/health`.
 Resource endpoints accept `limit` (1-100) and the `cursor` returned by a
 previous response; responses contain `next_cursor` when a following page exists.
+Successful lookup/resource responses include `meta.dataset` with the active
+release tag, producer build timestamp, activation timestamp, and producer
+source commit. `/v1/health` exposes the same dataset object.
 `GET /v1/me` has the identical lookup
 response schema and uses the Cloudflare client address only when the incoming
 connection is from a published Cloudflare address range; otherwise it uses the
@@ -52,10 +55,12 @@ export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
 The synchronizer uses one PostgreSQL database. It imports the release into a
 versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
 stable `public.lookup_prefixes`, `public.allocation_objects`,
-`public.route_objects`, and `public.autnums` views, then removes the old schema. The Go API
-keeps serving through the swap without a restart.
+`public.route_objects`, and `public.autnums` views, records the active dataset
+metadata in `public.bgp_api_dataset`, then removes the old schema. The Go API
+keeps serving through the swap without a restart. If import or validation
+fails, the existing public views are left untouched.
 
-It requires `curl`, `iconv`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub
+It requires `curl`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub
 API is sufficient for its daily run; set `BGP_API_GITHUB_TOKEN` only to raise
 the GitHub API rate limit.
 
@@ -99,3 +104,22 @@ go test ./...
 
 The response contract and source-data limitations are documented in
 [docs/data-contract.md](docs/data-contract.md).
+
+## Retained Data
+
+The daily producer keeps the API response compact while preserving useful
+source fields for advanced lookups:
+
+- allocation range, RIR, country, netname, status, allocation date, created and
+  last-modified timestamps
+- route prefix, origin ASN, route source, maintainer, organization, and
+  description
+- aut-num name, organization, country/status, source, maintainer, and
+  description
+- direct RPSL `abuse-c` or `abuse-mailbox` values when they exist on the source
+  object
+- geofeed country, region, and city
+
+The API intentionally does not add currency, language, timezone, proxy/VPN, or
+security reputation fields because those would require separate commercial or
+runtime data sources and would make the response less focused on BGP.

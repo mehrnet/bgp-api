@@ -27,7 +27,8 @@ func (repository *PostgresRepository) Lookup(ctx context.Context, ip ipkey.Parse
 	for _, source := range []string{"allocation", "route", "geofeed"} {
 		batch.Queue(`
 			SELECT start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city,
-			       status, allocation_date, created, last_modified, record_source, mnt_by, org, description
+			       status, allocation_date, created, last_modified, record_source, mnt_by, org,
+			       to_jsonb(lookup_prefixes)->>'abuse_contact', description
 			FROM lookup_prefixes
 			WHERE source = $1 AND prefix_key = ANY($2::text[])
 			ORDER BY prefix_length DESC
@@ -79,6 +80,7 @@ func readCandidates(results pgx.BatchResults) ([]LookupCandidate, error) {
 			&candidate.RecordSource,
 			&candidate.MntBy,
 			&candidate.Org,
+			&candidate.AbuseContact,
 			&candidate.Description,
 		); err != nil {
 			return nil, err
@@ -97,7 +99,8 @@ func (repository *PostgresRepository) LookupPrefix(ctx context.Context, prefix i
 		return nil, err
 	}
 	rows, err := repository.pool.Query(ctx, `
-		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, description,
+		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+		       to_jsonb(route_objects)->>'abuse_contact', description,
 		       CASE WHEN prefix = $1::cidr THEN 'exact' WHEN prefix >>= $1::cidr THEN 'covering' ELSE 'more_specific' END
 		FROM route_objects
 		WHERE prefix && $1::cidr AND id > $2
@@ -124,7 +127,7 @@ func (repository *PostgresRepository) LookupRange(ctx context.Context, rangeValu
 	if kind == RangeAllocations {
 		rows, err := repository.pool.Query(ctx, `
 			SELECT id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date,
-			       created, last_modified, record_source, mnt_by, org, description
+			       created, last_modified, record_source, mnt_by, org, to_jsonb(allocation_objects)->>'abuse_contact', description
 			FROM allocation_objects
 			WHERE ip_version = $1 AND start_ip_sort <= $2 AND end_ip_sort >= $3 AND id > $4
 			ORDER BY id
@@ -142,7 +145,8 @@ func (repository *PostgresRepository) LookupRange(ctx context.Context, rangeValu
 	}
 
 	rows, err := repository.pool.Query(ctx, `
-		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, description, ''
+		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+		       to_jsonb(route_objects)->>'abuse_contact', description, ''
 		FROM route_objects
 		WHERE ip_version = $1 AND start_ip_sort <= $2 AND end_ip_sort >= $3 AND id > $4
 		ORDER BY id
@@ -165,7 +169,8 @@ func (repository *PostgresRepository) LookupASN(ctx context.Context, asn uint32,
 		return nil, err
 	}
 	rows, err := repository.pool.Query(ctx, `
-		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, description, ''
+		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+		       to_jsonb(route_objects)->>'abuse_contact', description, ''
 		FROM route_objects
 		WHERE asn_number = $1 AND id > $2
 		ORDER BY id
@@ -193,7 +198,7 @@ func (repository *PostgresRepository) LookupASN(ctx context.Context, asn uint32,
 func (repository *PostgresRepository) prefixAllocation(ctx context.Context, prefix ipkey.ParsedPrefix) (*AllocationObject, error) {
 	row := repository.pool.QueryRow(ctx, `
 		SELECT id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date,
-		       created, last_modified, record_source, mnt_by, org, description
+		       created, last_modified, record_source, mnt_by, org, to_jsonb(allocation_objects)->>'abuse_contact', description
 		FROM allocation_objects
 		WHERE ip_version = $1 AND start_ip_sort <= $2 AND end_ip_sort >= $3
 		ORDER BY start_ip_sort DESC, end_ip_sort ASC, id
@@ -211,7 +216,8 @@ func (repository *PostgresRepository) prefixAllocation(ctx context.Context, pref
 
 func (repository *PostgresRepository) autnum(ctx context.Context, asn uint32) (*AutnumObject, error) {
 	row := repository.pool.QueryRow(ctx, `
-		SELECT asn, asn_number, registry, country, as_name, org, status, created, last_modified, record_source, mnt_by, description
+		SELECT asn, asn_number, registry, country, as_name, org, status, created, last_modified, record_source, mnt_by,
+		       to_jsonb(autnums)->>'abuse_contact', description
 		FROM autnums
 		WHERE asn_number = $1
 		ORDER BY id
@@ -221,7 +227,7 @@ func (repository *PostgresRepository) autnum(ctx context.Context, asn uint32) (*
 	var asnNumber int64
 	if err := row.Scan(
 		&object.ASN, &asnNumber, &object.Registry, &object.CountryRaw, &object.Name, &object.Organization,
-		&object.Status, &object.Created, &object.LastModified, &object.Source, &object.Maintainers, &object.Description,
+		&object.Status, &object.Created, &object.LastModified, &object.Source, &object.Maintainers, &object.AbuseContact, &object.Description,
 	); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -239,6 +245,7 @@ func (repository *PostgresRepository) autnum(ctx context.Context, asn uint32) (*
 	object.LastModified = present(object.LastModified)
 	object.Source = present(object.Source)
 	object.Maintainers = present(object.Maintainers)
+	object.AbuseContact = present(object.AbuseContact)
 	object.Description = present(object.Description)
 	return &object, nil
 }
@@ -255,7 +262,7 @@ func readRouteObjects(rows pgx.Rows) ([]RouteObject, error) {
 		var asnNumber *int64
 		if err := rows.Scan(
 			&object.ID, &object.Prefix, &object.Version, &object.OriginASN, &asnNumber, &object.Registry,
-			&object.Source, &object.Maintainers, &object.Organization, &object.Description, &object.Relation,
+			&object.Source, &object.Maintainers, &object.Organization, &object.AbuseContact, &object.Description, &object.Relation,
 		); err != nil {
 			return nil, fmt.Errorf("read route object: %w", err)
 		}
@@ -267,6 +274,7 @@ func readRouteObjects(rows pgx.Rows) ([]RouteObject, error) {
 		object.Source = present(object.Source)
 		object.Maintainers = present(object.Maintainers)
 		object.Organization = present(object.Organization)
+		object.AbuseContact = present(object.AbuseContact)
 		object.Description = present(object.Description)
 		object.Relation = strings.TrimSpace(object.Relation)
 		objects = append(objects, object)
@@ -298,7 +306,7 @@ func scanAllocationObject(row rowScanner) (AllocationObject, error) {
 	if err := row.Scan(
 		&object.ID, &object.StartIP, &object.EndIP, &object.Version, &object.Registry, &object.CountryRaw, &object.Name,
 		&object.Status, &object.AllocationDate, &object.Created, &object.LastModified, &object.Source,
-		&object.Maintainers, &object.Organization, &object.Description,
+		&object.Maintainers, &object.Organization, &object.AbuseContact, &object.Description,
 	); err != nil {
 		return AllocationObject{}, fmt.Errorf("read allocation object: %w", err)
 	}
@@ -315,8 +323,33 @@ func scanAllocationObject(row rowScanner) (AllocationObject, error) {
 	object.Source = present(object.Source)
 	object.Maintainers = present(object.Maintainers)
 	object.Organization = present(object.Organization)
+	object.AbuseContact = present(object.AbuseContact)
 	object.Description = present(object.Description)
 	return object, nil
+}
+
+func (repository *PostgresRepository) DatasetMetadata(ctx context.Context) (*DatasetMetadata, error) {
+	row := repository.pool.QueryRow(ctx, `
+		SELECT
+			release_tag,
+			to_jsonb(dataset)->>'built_at',
+			activated_at::text,
+			to_jsonb(dataset)->>'source_commit'
+		FROM public.bgp_api_dataset AS dataset
+		WHERE singleton
+	`)
+	metadata := &DatasetMetadata{}
+	if err := row.Scan(&metadata.ReleaseTag, &metadata.BuiltAt, &metadata.ActivatedAt, &metadata.SourceCommit); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query dataset metadata: %w", err)
+	}
+	metadata.ReleaseTag = present(metadata.ReleaseTag)
+	metadata.BuiltAt = present(metadata.BuiltAt)
+	metadata.ActivatedAt = present(metadata.ActivatedAt)
+	metadata.SourceCommit = present(metadata.SourceCommit)
+	return metadata, nil
 }
 
 func routePage(items []RouteObject, limit int) ([]RouteObject, nullableString) {

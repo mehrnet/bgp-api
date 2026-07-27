@@ -27,6 +27,7 @@ type RouteObject struct {
 	Source       nullableString `json:"source"`
 	Maintainers  nullableString `json:"maintainers"`
 	Organization nullableString `json:"organization"`
+	AbuseContact nullableString `json:"abuse_contact"`
 	Description  nullableString `json:"description"`
 }
 
@@ -46,6 +47,7 @@ type AllocationObject struct {
 	Source         nullableString `json:"source"`
 	Maintainers    nullableString `json:"maintainers"`
 	Organization   nullableString `json:"organization"`
+	AbuseContact   nullableString `json:"abuse_contact"`
 	Description    nullableString `json:"description"`
 }
 
@@ -62,6 +64,7 @@ type AutnumObject struct {
 	LastModified nullableString `json:"last_modified"`
 	Source       nullableString `json:"source"`
 	Maintainers  nullableString `json:"maintainers"`
+	AbuseContact nullableString `json:"abuse_contact"`
 	Description  nullableString `json:"description"`
 }
 
@@ -71,12 +74,14 @@ type RoutePage struct {
 }
 
 type PrefixResponse struct {
+	Meta       *ResponseMeta     `json:"meta,omitempty"`
 	Prefix     PrefixDescriptor  `json:"prefix"`
 	Allocation *AllocationObject `json:"allocation"`
 	Routes     RoutePage         `json:"routes"`
 }
 
 type RangeResponse struct {
+	Meta        *ResponseMeta      `json:"meta,omitempty"`
 	Range       RangeDescriptor    `json:"range"`
 	Kind        RangeKind          `json:"kind"`
 	Allocations []AllocationObject `json:"allocations,omitempty"`
@@ -85,6 +90,7 @@ type RangeResponse struct {
 }
 
 type ASNResponse struct {
+	Meta     *ResponseMeta `json:"meta,omitempty"`
 	ASN      string        `json:"asn"`
 	ASNumber int           `json:"as_number"`
 	Autnum   *AutnumObject `json:"autnum"`

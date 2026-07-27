@@ -18,6 +18,10 @@ type Repository interface {
 	Lookup(context.Context, ipkey.Parsed) (*LookupResponse, error)
 }
 
+type MetadataRepository interface {
+	DatasetMetadata(context.Context) (*DatasetMetadata, error)
+}
+
 type ResourceRepository interface {
 	LookupPrefix(context.Context, ipkey.ParsedPrefix, Page) (*PrefixResponse, error)
 	LookupRange(context.Context, ipkey.ParsedRange, RangeKind, Page) (*RangeResponse, error)
@@ -46,20 +50,22 @@ type Config struct {
 type nullableString = *string
 
 type LookupResponse struct {
+	Meta             *ResponseMeta  `json:"meta,omitempty"`
 	IP               string         `json:"ip"`
 	Version          int            `json:"version"`
 	Registry         nullableString `json:"registry"`
 	AllocationDate   nullableString `json:"allocation_date"`
 	AllocationStatus nullableString `json:"allocation_status"`
 	Network          struct {
-		CIDR     nullableString `json:"cidr"`
-		StartIP  nullableString `json:"start_ip"`
-		EndIP    nullableString `json:"end_ip"`
-		ASN      nullableString `json:"asn"`
-		ASNs     []string       `json:"asns"`
-		ASNumber *int           `json:"as_number"`
-		Name     nullableString `json:"name"`
-		Status   nullableString `json:"status"`
+		CIDR         nullableString `json:"cidr"`
+		StartIP      nullableString `json:"start_ip"`
+		EndIP        nullableString `json:"end_ip"`
+		ASN          nullableString `json:"asn"`
+		ASNs         []string       `json:"asns"`
+		ASNumber     *int           `json:"as_number"`
+		Name         nullableString `json:"name"`
+		Status       nullableString `json:"status"`
+		AbuseContact nullableString `json:"abuse_contact"`
 	} `json:"network"`
 	Allocation struct {
 		StartIP        nullableString `json:"start_ip"`
@@ -70,6 +76,7 @@ type LookupResponse struct {
 		Name           nullableString `json:"name"`
 		AllocationDate nullableString `json:"allocation_date"`
 		Status         nullableString `json:"status"`
+		AbuseContact   nullableString `json:"abuse_contact"`
 	} `json:"allocation"`
 	Location struct {
 		CountryCode nullableString `json:"country_code"`
@@ -81,6 +88,25 @@ type LookupResponse struct {
 		Route      bool `json:"route"`
 		Geofeed    bool `json:"geofeed"`
 	} `json:"sources"`
+}
+
+type ResponseMeta struct {
+	Dataset *DatasetMetadata `json:"dataset,omitempty"`
+}
+
+type DatasetMetadata struct {
+	ReleaseTag   nullableString `json:"release_tag"`
+	BuiltAt      nullableString `json:"built_at"`
+	ActivatedAt  nullableString `json:"activated_at"`
+	SourceCommit nullableString `json:"source_commit"`
+}
+
+type HealthResponse struct {
+	OK       bool             `json:"ok"`
+	Service  string           `json:"service"`
+	Version  int              `json:"version"`
+	Database string           `json:"database"`
+	Dataset  *DatasetMetadata `json:"dataset,omitempty"`
 }
 
 type errorResponse struct {
@@ -118,7 +144,7 @@ func New(repository Repository, config Config) http.Handler {
 		case request.Method == http.MethodGet && request.URL.Path == "/":
 			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1})
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/health":
-			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1, "database": config.DatabaseEngine})
+			health(writer, request, repository, config)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/me":
 			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies))
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/ip/"):
@@ -135,6 +161,18 @@ func New(repository Repository, config Config) http.Handler {
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}
 	})
+}
+
+func health(writer http.ResponseWriter, request *http.Request, repository Repository, config Config) {
+	response := HealthResponse{OK: true, Service: "bgp-api", Version: 1, Database: config.DatabaseEngine}
+	metadata, err := datasetMetadata(request.Context(), repository)
+	if err != nil {
+		log.Printf("dataset metadata lookup failed: %v", err)
+		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected metadata lookup failure")
+		return
+	}
+	response.Dataset = metadata
+	writeJSON(writer, http.StatusOK, response)
 }
 
 func resourceRepository(writer http.ResponseWriter, repository Repository) (ResourceRepository, bool) {
@@ -169,6 +207,9 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 		writeError(writer, http.StatusNotFound, "PREFIX_NOT_FOUND", "no allocation or route object matched this prefix")
 		return
 	}
+	if !attachMeta(writer, request, repository, response) {
+		return
+	}
 	writeJSON(writer, http.StatusOK, response)
 }
 
@@ -201,6 +242,9 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected range lookup failure")
 		return
 	}
+	if !attachMeta(writer, request, repository, response) {
+		return
+	}
 	writeJSON(writer, http.StatusOK, response)
 }
 
@@ -226,6 +270,9 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 	}
 	if response == nil {
 		writeError(writer, http.StatusNotFound, "ASN_NOT_FOUND", "no route or aut-num object matched this ASN")
+		return
+	}
+	if !attachMeta(writer, request, repository, response) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
@@ -298,7 +345,42 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		writeError(writer, http.StatusNotFound, "IP_NOT_FOUND", "no RIR allocation, route, or geofeed record matched this IP")
 		return
 	}
+	if !attachMeta(writer, request, repository, response) {
+		return
+	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func attachMeta(writer http.ResponseWriter, request *http.Request, repository Repository, response any) bool {
+	metadata, err := datasetMetadata(request.Context(), repository)
+	if err != nil {
+		log.Printf("dataset metadata lookup failed: %v", err)
+		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected metadata lookup failure")
+		return false
+	}
+	if metadata == nil {
+		return true
+	}
+	meta := &ResponseMeta{Dataset: metadata}
+	switch value := response.(type) {
+	case *LookupResponse:
+		value.Meta = meta
+	case *PrefixResponse:
+		value.Meta = meta
+	case *RangeResponse:
+		value.Meta = meta
+	case *ASNResponse:
+		value.Meta = meta
+	}
+	return true
+}
+
+func datasetMetadata(ctx context.Context, repository Repository) (*DatasetMetadata, error) {
+	metadataRepository, ok := repository.(MetadataRepository)
+	if !ok {
+		return nil, nil
+	}
+	return metadataRepository.DatasetMetadata(ctx)
 }
 
 func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
@@ -382,6 +464,7 @@ type LookupCandidate struct {
 	RecordSource   nullableString
 	MntBy          nullableString
 	Org            nullableString
+	AbuseContact   nullableString
 	Description    nullableString
 }
 
@@ -416,6 +499,7 @@ func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCa
 	response.Network.Name = nullable(allocation, func(row LookupCandidate) nullableString { return row.Netname })
 	if len(bestRoutes) > 0 {
 		response.Network.Status = nullable(&bestRoutes[0], func(row LookupCandidate) nullableString { return row.Status })
+		response.Network.AbuseContact = nullable(&bestRoutes[0], func(row LookupCandidate) nullableString { return row.AbuseContact })
 	}
 
 	if allocation != nil {
@@ -428,6 +512,7 @@ func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCa
 		response.Allocation.Name = nullable(allocation, func(row LookupCandidate) nullableString { return row.Netname })
 		response.Allocation.AllocationDate = nullable(allocation, func(row LookupCandidate) nullableString { return row.AllocationDate })
 		response.Allocation.Status = nullable(allocation, func(row LookupCandidate) nullableString { return row.Status })
+		response.Allocation.AbuseContact = nullable(allocation, func(row LookupCandidate) nullableString { return row.AbuseContact })
 		response.AllocationDate = response.Allocation.AllocationDate
 		response.AllocationStatus = response.Allocation.Status
 	}

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -35,4 +36,44 @@ func main() {
 		}
 		fmt.Printf("%s: %d\n", table, count)
 	}
+	requiredColumns := map[string][]string{
+		"allocations":     {"abuse_contact"},
+		"routes":          {"abuse_contact"},
+		"autnums":         {"abuse_contact"},
+		"lookup_prefixes": {"abuse_contact"},
+	}
+	for table, columns := range requiredColumns {
+		if table == "lookup_prefixes" && !*indexed {
+			continue
+		}
+		for _, column := range columns {
+			if !hasColumn(database, table, column) {
+				log.Fatalf("validate %s: missing required column %s", table, column)
+			}
+		}
+	}
+}
+
+func hasColumn(database *sql.DB, table, column string) bool {
+	rows, err := database.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		log.Fatalf("inspect %s: %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			log.Fatalf("inspect %s: %v", table, err)
+		}
+		if strings.EqualFold(name, column) {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Fatalf("inspect %s: %v", table, err)
+	}
+	return false
 }

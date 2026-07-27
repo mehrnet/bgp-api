@@ -6,10 +6,10 @@ set -euo pipefail
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
 readonly DATABASE_ROLE="${BGP_API_DATABASE_ROLE:-bgp_api}"
 readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-postgres.XXXXXX")"
-readonly LOOKUP_VIEW_SELECT="source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, description"
-readonly ALLOCATION_VIEW_SELECT="id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date, created, last_modified, record_source, mnt_by, org, description"
-readonly ROUTE_VIEW_SELECT="id, prefix, prefix_length, start_ip_sort, end_ip_sort, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, description"
-readonly AUTNUM_COLUMNS="id, asn, asn_number, registry, country, as_name, org, status, created, last_modified, record_source, mnt_by, description"
+readonly LOOKUP_VIEW_SELECT="source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description"
+readonly ALLOCATION_VIEW_SELECT="id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description"
+readonly ROUTE_VIEW_SELECT="id, prefix, prefix_length, start_ip_sort, end_ip_sort, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, abuse_contact, description"
+readonly AUTNUM_COLUMNS="id, asn, asn_number, registry, country, as_name, org, status, created, last_modified, record_source, mnt_by, abuse_contact, description"
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -55,8 +55,12 @@ initialize_metadata() {
       singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
       release_tag TEXT NOT NULL,
       dataset_schema TEXT NOT NULL,
+      built_at TEXT,
+      source_commit TEXT,
       activated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    ALTER TABLE public.bgp_api_dataset ADD COLUMN IF NOT EXISTS built_at TEXT;
+    ALTER TABLE public.bgp_api_dataset ADD COLUMN IF NOT EXISTS source_commit TEXT;
   " >/dev/null
 }
 
@@ -131,10 +135,14 @@ for table in allocation_objects route_objects autnums; do
   object_count="$(psql_query "SELECT count(*) FROM \"$new_schema\".$table;")"
   [ "$object_count" -gt 0 ] || die "new $table table is empty"
 done
+metadata_count="$(psql_query "SELECT count(*) FROM \"$new_schema\".dataset_metadata;")"
+[ "$metadata_count" -eq 1 ] || die "new dataset_metadata table must have exactly one row"
 for index in idx_lookup_prefix idx_allocation_objects_range idx_route_objects_prefix idx_route_objects_asn_id idx_autnums_asn_number; do
   index_exists="$(psql_query "SELECT to_regclass('$new_schema.$index') IS NOT NULL;")"
   [ "$index_exists" = "t" ] || die "new $index index is missing"
 done
+built_at="$(psql_query "SELECT coalesce(built_at, '') FROM \"$new_schema\".dataset_metadata LIMIT 1;")"
+source_commit="$(psql_query "SELECT coalesce(source_commit, '') FROM \"$new_schema\".dataset_metadata LIMIT 1;")"
 
 psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet <<SQL
 BEGIN;
@@ -154,6 +162,10 @@ INSERT INTO public.bgp_api_dataset (singleton, release_tag, dataset_schema, acti
     SET release_tag = EXCLUDED.release_tag,
         dataset_schema = EXCLUDED.dataset_schema,
         activated_at = EXCLUDED.activated_at;
+UPDATE public.bgp_api_dataset
+  SET built_at = NULLIF('$built_at', ''),
+      source_commit = NULLIF('$source_commit', '')
+  WHERE singleton;
 COMMIT;
 SQL
 

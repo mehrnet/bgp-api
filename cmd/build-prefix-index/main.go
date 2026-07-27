@@ -23,7 +23,7 @@ type sourceRow struct {
 	version                                                         int
 	registry, country, netname, cidr, asn, region, city, status     sql.NullString
 	allocationDate, created, lastModified, recordSource, mntBy, org sql.NullString
-	description                                                     sql.NullString
+	abuseContact, description                                       sql.NullString
 }
 
 func main() {
@@ -51,16 +51,16 @@ func main() {
 			ip_version INTEGER NOT NULL,
 			registry TEXT, country TEXT, netname TEXT, cidr TEXT, asn TEXT, region TEXT, city TEXT,
 			status TEXT, allocation_date TEXT, created TEXT, last_modified TEXT,
-			record_source TEXT, mnt_by TEXT, org TEXT, description TEXT
+			record_source TEXT, mnt_by TEXT, org TEXT, abuse_contact TEXT, description TEXT
 		);
 	`); err != nil {
 		log.Fatal(err)
 	}
 
 	definitions := []sourceDefinition{
-		{"allocation", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, NULL, NULL, NULL, NULL, status, allocation_date, created, last_modified, source, mnt_by, org, descr FROM allocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
-		{"route", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, NULL, NULL, cidr, asn, NULL, NULL, NULL, NULL, NULL, NULL, source, mnt_by, org, descr FROM routes WHERE rowid > ? ORDER BY rowid LIMIT ?"},
-		{"geofeed", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, NULL, country, NULL, NULL, NULL, region, city, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM geolocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
+		{"allocation", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, NULL, NULL, NULL, NULL, status, allocation_date, created, last_modified, source, mnt_by, org, abuse_contact, descr FROM allocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
+		{"route", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, registry, NULL, NULL, cidr, asn, NULL, NULL, NULL, NULL, NULL, NULL, source, mnt_by, org, abuse_contact, descr FROM routes WHERE rowid > ? ORDER BY rowid LIMIT ?"},
+		{"geofeed", "SELECT rowid, start_ip_sort, end_ip_sort, ip_version, NULL, country, NULL, NULL, NULL, region, city, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM geolocations WHERE rowid > ? ORDER BY rowid LIMIT ?"},
 	}
 	for _, definition := range definitions {
 		if err := materialize(database, definition); err != nil {
@@ -101,7 +101,7 @@ func materialize(database *sql.DB, definition sourceDefinition) error {
 				&row.rowID, &row.start, &row.end, &row.version,
 				&row.registry, &row.country, &row.netname, &row.cidr, &row.asn, &row.region, &row.city,
 				&row.status, &row.allocationDate, &row.created, &row.lastModified,
-				&row.recordSource, &row.mntBy, &row.org, &row.description,
+				&row.recordSource, &row.mntBy, &row.org, &row.abuseContact, &row.description,
 			); err != nil {
 				rows.Close()
 				return err
@@ -121,7 +121,7 @@ func materialize(database *sql.DB, definition sourceDefinition) error {
 		if err != nil {
 			return err
 		}
-		insert, err := transaction.Prepare(`INSERT INTO lookup_prefixes (source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		insert, err := transaction.Prepare(`INSERT INTO lookup_prefixes (source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			transaction.Rollback()
 			return err
@@ -138,7 +138,7 @@ func materialize(database *sql.DB, definition sourceDefinition) error {
 					definition.source, cover.Key, cover.Length, row.start, row.end, row.version,
 					nullValue(row.registry), nullValue(row.country), nullValue(row.netname), nullValue(row.cidr), nullValue(row.asn), nullValue(row.region), nullValue(row.city),
 					nullValue(row.status), nullValue(row.allocationDate), nullValue(row.created), nullValue(row.lastModified),
-					nullValue(row.recordSource), nullValue(row.mntBy), nullValue(row.org), nullValue(row.description),
+					nullValue(row.recordSource), nullValue(row.mntBy), nullValue(row.org), nullValue(row.abuseContact), nullValue(row.description),
 				); err != nil {
 					insert.Close()
 					transaction.Rollback()

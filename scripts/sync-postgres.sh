@@ -146,13 +146,14 @@ source_commit="$(psql_query "SELECT coalesce(source_commit, '') FROM \"$new_sche
 
 psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet <<SQL
 BEGIN;
-CREATE OR REPLACE VIEW public.lookup_prefixes AS
+DROP VIEW IF EXISTS public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums;
+CREATE VIEW public.lookup_prefixes AS
   SELECT $LOOKUP_VIEW_SELECT FROM "$new_schema".lookup_prefixes;
-CREATE OR REPLACE VIEW public.allocation_objects AS
+CREATE VIEW public.allocation_objects AS
   SELECT $ALLOCATION_VIEW_SELECT FROM "$new_schema".allocation_objects;
-CREATE OR REPLACE VIEW public.route_objects AS
+CREATE VIEW public.route_objects AS
   SELECT $ROUTE_VIEW_SELECT FROM "$new_schema".route_objects;
-CREATE OR REPLACE VIEW public.autnums AS
+CREATE VIEW public.autnums AS
   SELECT $AUTNUM_COLUMNS FROM "$new_schema".autnums;
 GRANT USAGE ON SCHEMA public TO "$DATABASE_ROLE";
 GRANT SELECT ON TABLE public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums TO "$DATABASE_ROLE";

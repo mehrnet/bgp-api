@@ -34,7 +34,7 @@ Every API response is derived exclusively from the locally imported daily
 dataset. The API makes no runtime requests to RIRs, RDAP, RIPEstat, or any
 other upstream service.
 
-For production, build one static binary:
+For production, build one static binary locally:
 
 ```sh
 go build -o bin/bgp-api ./cmd/bgp-api
@@ -43,9 +43,10 @@ go build -o bin/bgp-api ./cmd/bgp-api
 ## PostgreSQL Dataset Sync
 
 The producer publishes `mehrnet_bgp_postgres.sql.gz`, a compressed PostgreSQL
-`COPY` snapshot. It includes `lookup_prefixes` for low-latency point lookups
-plus normalized `allocation_objects`, `route_objects`, and `autnums` tables
-for range, CIDR, and ASN resources.
+`COPY` snapshot, alongside static Linux API binaries built from the same source
+commit. The dump includes `lookup_prefixes` for low-latency point lookups plus
+normalized `allocation_objects`, `route_objects`, and `autnums` tables for
+range, CIDR, and ASN resources.
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
@@ -56,13 +57,17 @@ The synchronizer uses one PostgreSQL database. It imports the release into a
 versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
 stable `public.lookup_prefixes`, `public.allocation_objects`,
 `public.route_objects`, and `public.autnums` views, records the active dataset
-metadata in `public.bgp_api_dataset`, then removes the old schema. The Go API
-keeps serving through the swap without a restart. If import or validation
-fails, the existing public views are left untouched.
+metadata in `public.bgp_api_dataset`, then removes the old schema. After a
+successful dataset swap, it installs the matching `bgp-api-linux-$arch` binary
+when the release provides one and restarts `bgp-api`. If import or validation
+fails, the existing public views and running API binary are left untouched.
 
-It requires `curl`, `jq`, `gzip`, `psql`, and `sha256sum`. The public GitHub
-API is sufficient for its daily run; set `BGP_API_GITHUB_TOKEN` only to raise
-the GitHub API rate limit.
+It requires `curl`, `jq`, `gzip`, `install`, `psql`, `sha256sum`, `tar`, and
+`uname`. The public GitHub API is sufficient for its daily run; set
+`BGP_API_GITHUB_TOKEN` only to raise the GitHub API rate limit. Set
+`BGP_API_SYNC_BINARY=0` to disable binary installation, `BGP_API_BINARY_PATH` to
+change the install path, or `BGP_API_SERVICE_NAME` to change the restarted
+systemd service.
 
 Run it after the GitHub producer build with a lock to prevent overlapping
 imports. Keep `DATABASE_URL` in a root-readable environment file.
@@ -90,6 +95,8 @@ builds and publishes release assets. Each release contains:
 - `mehrnet_bgp.tar.gz`: normal SQLite database.
 - `mehrnet_bgp_indexed.tar.gz`: SQLite database with lookup indexes.
 - `mehrnet_bgp_postgres.sql.gz`: PostgreSQL snapshot for the next versioned schema.
+- `bgp-api-linux-amd64.tar.gz`: static Linux amd64 API server binary.
+- `bgp-api-linux-arm64.tar.gz`: static Linux arm64 API server binary.
 - `SHA256SUMS.txt`: hashes for every release asset.
 
 Assets over GitHub's release limit are split into numbered `.part-*` files.

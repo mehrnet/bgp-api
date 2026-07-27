@@ -148,6 +148,16 @@ jobs:
           echo "DATASET_BUILT_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
       - name: Export PostgreSQL COPY dump
         run: go run ./cmd/export-postgres -database mehrnet_bgp.db -output release/mehrnet_bgp_postgres.sql.gz -schema "$POSTGRES_SCHEMA" -release-tag "$RELEASE_TAG" -built-at "$DATASET_BUILT_AT" -source-commit "$GITHUB_SHA"
+      - name: Build static Linux API binaries
+        run: |
+          mkdir -p release/bin
+          for arch in amd64 arm64; do
+            binary="bgp-api-linux-${arch}"
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "release/bin/$binary" ./cmd/bgp-api
+            tar -C release/bin -czf "release/${binary}.tar.gz" "$binary"
+            rm "release/bin/$binary"
+          done
+          rmdir release/bin
       - name: Package database artifacts
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
@@ -172,6 +182,8 @@ jobs:
           - mehrnet_bgp.tar.gz: normal database.
           - mehrnet_bgp_indexed.tar.gz: range and prefix-indexed database.
           - mehrnet_bgp_postgres.sql.gz: PostgreSQL COPY dump of the indexed database.
+          - bgp-api-linux-amd64.tar.gz: static Linux amd64 API server binary.
+          - bgp-api-linux-arm64.tar.gz: static Linux arm64 API server binary.
           - SHA256SUMS.txt: SHA-256 checksums for all assets.
 
           If an asset exceeds GitHub's per-asset limit, download every numbered

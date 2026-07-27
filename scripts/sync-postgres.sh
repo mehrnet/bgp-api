@@ -6,6 +6,10 @@ set -euo pipefail
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
 readonly DATABASE_ROLE="${BGP_API_DATABASE_ROLE:-bgp_api}"
 readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-postgres.XXXXXX")"
+readonly RELEASE_DIR="$WORK_DIR/release"
+readonly SYNC_BINARY="${BGP_API_SYNC_BINARY:-1}"
+readonly BINARY_PATH="${BGP_API_BINARY_PATH:-/usr/local/bin/bgp-api}"
+readonly SERVICE_NAME="${BGP_API_SERVICE_NAME:-bgp-api}"
 readonly LOOKUP_VIEW_SELECT="source, prefix_key, prefix_length, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, cidr, asn, region, city, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description"
 readonly ALLOCATION_VIEW_SELECT="id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description"
 readonly ROUTE_VIEW_SELECT="id, prefix, prefix_length, start_ip_sort, end_ip_sort, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, abuse_contact, description"
@@ -36,6 +40,51 @@ github_api() {
   curl --fail --location --silent --show-error --retry 3 "${headers[@]}" "https://api.github.com$endpoint"
 }
 
+asset_url_for() {
+  local asset_name="$1"
+  jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' <<<"$release_json"
+}
+
+asset_exists() {
+  local asset_name="$1"
+  local asset_url
+  asset_url="$(asset_url_for "$asset_name")"
+  [ -n "$asset_url" ] && [ "$asset_url" != "null" ]
+}
+
+download_asset() {
+  local tag="$1"
+  local asset_name="$2"
+  local asset_url
+  mkdir -p "$RELEASE_DIR"
+  asset_url="$(asset_url_for "$asset_name")"
+  [ -n "$asset_url" ] && [ "$asset_url" != "null" ] || die "release $tag is missing $asset_name"
+  curl --fail --location --silent --show-error --retry 3 --output "$RELEASE_DIR/$asset_name" "$asset_url"
+}
+
+download_checksum_manifest() {
+  local tag="$1"
+  if [ ! -s "$RELEASE_DIR/SHA256SUMS.txt" ]; then
+    download_asset "$tag" 'SHA256SUMS.txt'
+  fi
+  [ -s "$RELEASE_DIR/SHA256SUMS.txt" ] || die "release $tag has no checksum manifest"
+}
+
+checksum_line_for() {
+  local asset_name="$1"
+  awk -v name="$asset_name" '$2 == name || $2 == "./" name || $2 ~ "/" name "$" { sub(/^.*\//, "", $2); print; exit }' "$RELEASE_DIR/SHA256SUMS.txt"
+}
+
+verify_asset() {
+  local tag="$1"
+  local asset_name="$2"
+  local expected
+  download_checksum_manifest "$tag"
+  expected="$(checksum_line_for "$asset_name")"
+  [ -n "$expected" ] || die "release $tag has no checksum for $asset_name"
+  (cd "$RELEASE_DIR" && printf '%s\n' "$expected" | sha256sum -c - >&2)
+}
+
 schema_for_tag() {
   local tag="$1"
   if [[ "$tag" =~ ^db-([0-9]{4})\.([0-9]{2})\.([0-9]{2})-([0-9]{4})-[0-9]+$ ]]; then
@@ -64,45 +113,73 @@ initialize_metadata() {
   " >/dev/null
 }
 
-download_release() {
+download_postgres_dump() {
   local tag="$1"
-  local release_dir="$WORK_DIR/release"
-  mkdir -p "$release_dir"
-  local asset_url
-  download_asset() {
-    local asset_name="$1"
-    asset_url="$(jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' <<<"$release_json")"
-    [ -n "$asset_url" ] && [ "$asset_url" != "null" ] || die "release $tag is missing $asset_name"
-    curl --fail --location --silent --show-error --retry 3 --output "$release_dir/$asset_name" "$asset_url"
-  }
-
-  download_asset 'SHA256SUMS.txt'
-
-  [ -s "$release_dir/SHA256SUMS.txt" ] || die "release $tag has no checksum manifest"
-  local expected
-  expected="$(awk '$2 ~ /(^|\/)mehrnet_bgp_postgres\.sql\.gz/ { sub(/^.*\//, "", $2); print }' "$release_dir/SHA256SUMS.txt")"
-  [ -n "$expected" ] || die "release $tag has no PostgreSQL dump checksum"
-
-  local dump="$release_dir/mehrnet_bgp_postgres.sql.gz"
-  asset_url="$(jq -r '.assets[] | select(.name == "mehrnet_bgp_postgres.sql.gz") | .browser_download_url' <<<"$release_json")"
-  if [ -n "$asset_url" ] && [ "$asset_url" != "null" ]; then
-    download_asset 'mehrnet_bgp_postgres.sql.gz'
+  local dump="$RELEASE_DIR/mehrnet_bgp_postgres.sql.gz"
+  download_checksum_manifest "$tag"
+  if asset_exists 'mehrnet_bgp_postgres.sql.gz'; then
+    download_asset "$tag" 'mehrnet_bgp_postgres.sql.gz'
+    verify_asset "$tag" 'mehrnet_bgp_postgres.sql.gz'
   else
     local -a part_names
     mapfile -t part_names < <(jq -r '.assets[] | select(.name | startswith("mehrnet_bgp_postgres.sql.gz.part-")) | .name' <<<"$release_json" | sort)
     [ "${#part_names[@]}" -gt 0 ] || die "release $tag has no PostgreSQL dump"
     for part_name in "${part_names[@]}"; do
-      download_asset "$part_name"
+      download_asset "$tag" "$part_name"
+      verify_asset "$tag" "$part_name"
     done
-    local parts=("$release_dir"/mehrnet_bgp_postgres.sql.gz.part-*)
+    local parts=("$RELEASE_DIR"/mehrnet_bgp_postgres.sql.gz.part-*)
     cat "${parts[@]}" > "$dump"
   fi
-  (cd "$release_dir" && printf '%s\n' "$expected" | sha256sum -c - >&2)
   printf '%s\n' "$dump"
 }
 
+binary_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'amd64\n' ;;
+    aarch64|arm64) printf 'arm64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+truthy() {
+  case "${1,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sync_binary() {
+  local tag="$1"
+  truthy "$SYNC_BINARY" || return 0
+
+  local arch
+  arch="$(binary_arch)" || {
+    printf 'skipping API binary sync: unsupported machine architecture %s\n' "$(uname -m)" >&2
+    return 0
+  }
+
+  local binary="bgp-api-linux-$arch"
+  local asset="$binary.tar.gz"
+  if ! asset_exists "$asset"; then
+    printf 'skipping API binary sync: release %s has no %s asset\n' "$tag" "$asset" >&2
+    return 0
+  fi
+
+  download_asset "$tag" "$asset"
+  verify_asset "$tag" "$asset"
+  mkdir -p "$WORK_DIR/bin"
+  tar -xzf "$RELEASE_DIR/$asset" -C "$WORK_DIR/bin" "$binary"
+  install -m 0755 "$WORK_DIR/bin/$binary" "$BINARY_PATH.new"
+  mv "$BINARY_PATH.new" "$BINARY_PATH"
+  if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$SERVICE_NAME.service" >/dev/null 2>&1; then
+    systemctl restart "$SERVICE_NAME"
+  fi
+  printf 'installed %s from release %s to %s\n' "$binary" "$tag" "$BINARY_PATH"
+}
+
 [ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is required"
-for command in curl gzip jq psql sha256sum; do require_command "$command"; done
+for command in curl gzip install jq psql sha256sum tar uname; do require_command "$command"; done
 
 initialize_metadata
 release_json="$(github_api "/repos/$REPOSITORY/releases/latest")"
@@ -113,11 +190,12 @@ active_tag="$(psql_query "SELECT release_tag FROM public.bgp_api_dataset WHERE s
 active_schema="$(psql_query "SELECT dataset_schema FROM public.bgp_api_dataset WHERE singleton;")"
 
 if [ "$active_tag" = "$latest_tag" ]; then
+  sync_binary "$latest_tag"
   printf 'release %s is already active\n' "$latest_tag"
   exit 0
 fi
 
-dump="$(download_release "$latest_tag")"
+dump="$(download_postgres_dump "$latest_tag")"
 schema_exists="$(psql_query "SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = '$new_schema');")"
 if [ "$schema_exists" = "t" ]; then
   psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet --command "DROP SCHEMA \"$new_schema\" CASCADE;" >/dev/null
@@ -174,4 +252,5 @@ if [[ "$active_schema" =~ ^bgp_[0-9]{8}_[0-9]{4}$ ]] && [ "$active_schema" != "$
   psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet --command "DROP SCHEMA \"$active_schema\" CASCADE;" >/dev/null
 fi
 
+sync_binary "$latest_tag"
 printf 'release %s is active in schema %s (%s rows)\n' "$latest_tag" "$new_schema" "$row_count"

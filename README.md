@@ -73,10 +73,14 @@ change the install path, or `BGP_API_SERVICE_NAME` to change the restarted
 systemd service.
 
 Run it after the GitHub producer build with a lock to prevent overlapping
-imports. Keep `DATABASE_URL` in a root-readable environment file.
+imports. Keep `DATABASE_URL` in a root-readable environment file. The
+recommended production schedule is the systemd timer in `deploy/`, which runs
+daily at 05:00 UTC and writes sync output to journald.
 
-```cron
-0 5 * * * flock -n /var/lock/bgp-api-postgres-sync.lock sh -lc 'set -a; . /etc/bgp-api/postgres.env; set +a; cd /srv/bgp-api && ./scripts/sync-postgres.sh' >> /var/log/bgp-api-postgres-sync.log 2>&1
+```sh
+sudo cp deploy/bgp-api-postgres-sync.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bgp-api-postgres-sync.timer
 ```
 
 ## Cloudflare
@@ -93,19 +97,15 @@ the proxy header even on the loopback interface.
 ## Monitoring
 
 Use systemd's journal as the source of truth for API and sync logs. The API
-logs to stdout/stderr under `bgp-api.service`; one-off or cron sync runs should
-run through systemd or append only operational wrapper output.
+logs to stdout/stderr under `bgp-api.service`; scheduled syncs run under
+`bgp-api-postgres-sync.service`.
 
 ```sh
 journalctl -u bgp-api -f
-journalctl -u bgp-api-postgres-sync-manual-4.service --no-pager
+journalctl -u bgp-api-postgres-sync.service --no-pager
+systemctl list-timers bgp-api-postgres-sync.timer
 systemctl status bgp-api
 ```
-
-For the daily cron, prefer a systemd timer or a cron wrapper that invokes
-`systemd-run` for the sync command. That keeps import, binary-install, restart,
-memory peak, and failure status in journald instead of scattering state across
-plain log files.
 
 ## Producer Releases
 

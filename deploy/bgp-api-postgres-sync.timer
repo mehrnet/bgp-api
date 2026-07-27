@@ -1,0 +1,10 @@
+[Unit]
+Description=Run MehrNet BGP PostgreSQL dataset sync daily
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+Persistent=true
+Unit=bgp-api-postgres-sync.service
+
+[Install]
+WantedBy=timers.target

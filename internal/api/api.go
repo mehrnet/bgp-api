@@ -54,6 +54,7 @@ const (
 type Config struct {
 	AllowedOrigins  map[string]struct{}
 	OriginAuthToken string
+	Build           BuildInfo
 	DatabaseEngine  string
 	TrustedProxies  []netip.Prefix
 }
@@ -143,11 +144,18 @@ type DatasetMetadata struct {
 	SourceCommit nullableString `json:"source_commit"`
 }
 
+type BuildInfo struct {
+	Version nullableString `json:"version"`
+	Commit  nullableString `json:"commit"`
+	BuiltAt nullableString `json:"built_at"`
+}
+
 type HealthResponse struct {
 	OK       bool             `json:"ok"`
 	Service  string           `json:"service"`
 	Version  int              `json:"version"`
 	Database string           `json:"database"`
+	Build    *BuildInfo       `json:"build,omitempty"`
 	Dataset  *DatasetMetadata `json:"dataset,omitempty"`
 }
 
@@ -207,6 +215,7 @@ func New(repository Repository, config Config) http.Handler {
 
 func health(writer http.ResponseWriter, request *http.Request, repository Repository, config Config) {
 	response := HealthResponse{OK: true, Service: "bgp-api", Version: 1, Database: config.DatabaseEngine}
+	response.Build = buildInfo(config.Build)
 	metadata, err := datasetMetadata(request.Context(), repository)
 	if err != nil {
 		log.Printf("dataset metadata lookup failed: %v", err)
@@ -215,6 +224,16 @@ func health(writer http.ResponseWriter, request *http.Request, repository Reposi
 	}
 	response.Dataset = metadata
 	writeJSON(writer, http.StatusOK, response)
+}
+
+func buildInfo(info BuildInfo) *BuildInfo {
+	info.Version = present(info.Version)
+	info.Commit = present(info.Commit)
+	info.BuiltAt = present(info.BuiltAt)
+	if info.Version == nil && info.Commit == nil && info.BuiltAt == nil {
+		return nil
+	}
+	return &info
 }
 
 func resourceRepository(writer http.ResponseWriter, repository Repository) (ResourceRepository, bool) {

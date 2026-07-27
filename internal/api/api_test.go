@@ -77,12 +77,18 @@ func TestHandlerRequiresOriginToken(t *testing.T) {
 }
 
 func TestHealthIncludesDatasetMetadata(t *testing.T) {
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql"})
+	version := "db-2026.07.27-0719-9"
+	commit := "62a5fd6b0c94e7f58aaeb4cf8e44394ab054c340"
+	builtAt := "2026-07-27T07:27:00Z"
+	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql", Build: BuildInfo{Version: &version, Commit: &commit, BuiltAt: &builtAt}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"release_tag":"db-2026.07.27-0400-1"`) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"build":{"version":"db-2026.07.27-0719-9","commit":"62a5fd6b0c94e7f58aaeb4cf8e44394ab054c340","built_at":"2026-07-27T07:27:00Z"}`) {
+		t.Fatalf("missing build metadata: %s", response.Body.String())
 	}
 }
 

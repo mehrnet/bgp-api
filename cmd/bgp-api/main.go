@@ -17,6 +17,12 @@ import (
 	"github.com/mehrnet/bgp-api/internal/api"
 )
 
+var (
+	version = "dev"
+	commit  = ""
+	builtAt = ""
+)
+
 func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -42,8 +48,13 @@ func main() {
 	config := api.Config{
 		AllowedOrigins:  allowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS_JSON")),
 		OriginAuthToken: os.Getenv("ORIGIN_AUTH_TOKEN"),
-		DatabaseEngine:  "postgresql",
-		TrustedProxies:  trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
+		Build: api.BuildInfo{
+			Version: stringPointer(version),
+			Commit:  stringPointer(commit),
+			BuiltAt: stringPointer(builtAt),
+		},
+		DatabaseEngine: "postgresql",
+		TrustedProxies: trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
 	}
 	handler := api.New(api.NewPostgresRepository(pool), config)
 	server := &http.Server{
@@ -68,6 +79,10 @@ func main() {
 	if err := server.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func trustedProxies(value string) []netip.Prefix {

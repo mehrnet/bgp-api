@@ -24,6 +24,9 @@ previous response; responses contain `next_cursor` when a following page exists.
 Successful lookup/resource responses include `meta.dataset` with the active
 release tag, producer build timestamp, activation timestamp, and producer
 source commit. `/v1/health` exposes the same dataset object.
+`/v1/health` also exposes `build.version`, `build.commit`, and
+`build.built_at` for the running API binary, so binary and dataset provenance
+can be checked independently.
 `GET /v1/me` has the identical lookup
 response schema and uses the Cloudflare client address only when the incoming
 connection is from a published Cloudflare address range; otherwise it uses the
@@ -86,6 +89,23 @@ firewall and Authenticated Origin Pulls.
 The production unit and reverse-proxy templates are in `deploy/`. The Caddy
 proxy injects the origin token, so the Go process remains inaccessible without
 the proxy header even on the loopback interface.
+
+## Monitoring
+
+Use systemd's journal as the source of truth for API and sync logs. The API
+logs to stdout/stderr under `bgp-api.service`; one-off or cron sync runs should
+run through systemd or append only operational wrapper output.
+
+```sh
+journalctl -u bgp-api -f
+journalctl -u bgp-api-postgres-sync-manual-4.service --no-pager
+systemctl status bgp-api
+```
+
+For the daily cron, prefer a systemd timer or a cron wrapper that invokes
+`systemd-run` for the sync command. That keeps import, binary-install, restart,
+memory peak, and failure status in journald instead of scattering state across
+plain log files.
 
 ## Producer Releases
 

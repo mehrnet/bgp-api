@@ -76,7 +76,7 @@ fields may be `null` only for old local fixtures or pre-metadata datasets.
 covering allocation record, and cursor-paginated registered RPSL route
 objects. `GET /v1/range?start=:ip&end=:ip` returns overlapping allocation
 records by default; use `kind=routes` for overlapping route objects.
-`GET /v1/asn/:asn` returns an `aut-num` object and the ASN's registered route
+`GET /v1/asn?query=:asn` returns an `aut-num` object and the ASN's registered route
 objects. These route objects are registry/IRR records, not a claim that the
 prefix is visible in the global BGP table.
 

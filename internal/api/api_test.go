@@ -137,9 +137,9 @@ func TestHandlerRejectsInvalidDetailsMode(t *testing.T) {
 	}
 }
 
-func TestHandlerDoesNotServeLegacyIPPathOrSearchRoute(t *testing.T) {
+func TestHandlerDoesNotServeLegacyPathOrSearchRoutes(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
-	for _, path := range []string{"/v1/ip/1.1.1.1", "/v1/search?q=1.1.1.1"} {
+	for _, path := range []string{"/v1/ip/1.1.1.1", "/v1/asn/AS13335", "/v1/search?q=1.1.1.1"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
@@ -182,7 +182,7 @@ func TestHandlerLooksUpPrefixRangeAndASN(t *testing.T) {
 	}{
 		{"/v1/prefix?prefix=1.1.1.42/24", `"cidr":"1.1.1.0/24"`},
 		{"/v1/range?start=1.1.1.1&end=1.1.1.2", `"address_count":"2"`},
-		{"/v1/asn/13335", `"asn":"AS13335"`},
+		{"/v1/asn?query=13335", `"asn":"AS13335"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
 		response := httptest.NewRecorder()
@@ -199,8 +199,8 @@ func TestHandlerRejectsInvalidResourceQueries(t *testing.T) {
 		"/v1/prefix?prefix=invalid",
 		"/v1/range?start=1.1.1.2&end=1.1.1.1",
 		"/v1/range?start=1.1.1.1&end=1.1.1.2&kind=unknown",
-		"/v1/asn/AS0",
-		"/v1/asn/AS13335?limit=101",
+		"/v1/asn?query=AS0",
+		"/v1/asn?query=AS13335&limit=101",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()

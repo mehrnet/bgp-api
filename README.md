@@ -21,7 +21,7 @@ defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the
 `X-BGP-API-Origin-Token` header. The API provides `GET /v1/ip?query=:ip`,
 `GET /v1/me`, `GET /v1/prefix?prefix=:cidr`,
 `GET /v1/range?start=:ip&end=:ip&kind=allocations|routes`,
-`GET /v1/asn/:asn`, and `GET /v1/health`.
+`GET /v1/asn?query=:asn`, and `GET /v1/health`.
 Resource endpoints accept `limit` (1-100) and the `cursor` returned by a
 previous response; responses contain `next_cursor` when a following page exists.
 Successful lookup/resource responses include `meta.dataset` with the active

@@ -203,8 +203,8 @@ func New(repository Repository, config Config) http.Handler {
 			lookupPrefix(writer, request, repository)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/range":
 			lookupRange(writer, request, repository)
-		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/asn/"):
-			lookupASN(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/asn/"))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/asn":
+			lookupASN(writer, request, repository, request.URL.Query().Get("query"))
 		default:
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}

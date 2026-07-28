@@ -1,6 +1,6 @@
 # Data Contract
 
-`GET /v1/ip/:ip` returns a single, stable shape. Values unavailable in the
+`GET /v1/ip?query={address}` returns a single, stable shape. Values unavailable in the
 source data are `null`; they are never guessed.
 
 ```json

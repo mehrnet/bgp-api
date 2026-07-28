@@ -197,16 +197,14 @@ func New(repository Repository, config Config) http.Handler {
 			health(writer, request, repository, config)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/me":
 			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies))
-		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/ip/"):
-			lookupIP(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/ip/"))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/ip":
+			lookupIP(writer, request, repository, request.URL.Query().Get("query"))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/prefix":
 			lookupPrefix(writer, request, repository)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/range":
 			lookupRange(writer, request, repository)
 		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/asn/"):
 			lookupASN(writer, request, repository, strings.TrimPrefix(request.URL.Path, "/v1/asn/"))
-		case request.Method == http.MethodGet && request.URL.Path == "/v1/search":
-			search(writer, request)
 		default:
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}
@@ -339,27 +337,6 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 	writeJSON(writer, http.StatusOK, response)
 }
 
-func search(writer http.ResponseWriter, request *http.Request) {
-	query := strings.TrimSpace(request.URL.Query().Get("q"))
-	if query == "" {
-		writeError(writer, http.StatusBadRequest, "INVALID_QUERY", "q is required")
-		return
-	}
-	if ip, ok := ipkey.Parse(query); ok {
-		writeJSON(writer, http.StatusOK, SearchResponse{Query: query, Type: "ip", Normalized: ip.Canonical, Endpoint: "/v1/ip/" + ip.Canonical})
-		return
-	}
-	if prefix, ok := ipkey.ParsePrefix(query); ok {
-		writeJSON(writer, http.StatusOK, SearchResponse{Query: query, Type: "prefix", Normalized: prefix.Canonical, Endpoint: "/v1/prefix?prefix=" + prefix.Canonical})
-		return
-	}
-	if asn, ok := parseASN(query); ok {
-		writeJSON(writer, http.StatusOK, SearchResponse{Query: query, Type: "asn", Normalized: "AS" + strconv.FormatUint(uint64(asn), 10), Endpoint: "/v1/asn/AS" + strconv.FormatUint(uint64(asn), 10)})
-		return
-	}
-	writeError(writer, http.StatusBadRequest, "INVALID_QUERY", "q must be an IP address, CIDR, or ASN")
-}
-
 func requestPage(writer http.ResponseWriter, request *http.Request) (Page, bool) {
 	page := Page{Limit: 50}
 	query := request.URL.Query()
@@ -394,7 +371,7 @@ func parseASN(input string) (uint32, bool) {
 func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
 	ip, ok := ipkey.Parse(input)
 	if !ok {
-		writeError(writer, http.StatusBadRequest, "INVALID_IP", "path parameter must be a valid IPv4 or IPv6 address")
+		writeError(writer, http.StatusBadRequest, "INVALID_IP", "query must be a valid IPv4 or IPv6 address")
 		return
 	}
 	options, ok := lookupOptions(writer, request)

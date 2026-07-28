@@ -96,10 +96,3 @@ type ASNResponse struct {
 	Autnum   *AutnumObject `json:"autnum"`
 	Routes   RoutePage     `json:"routes"`
 }
-
-type SearchResponse struct {
-	Query      string `json:"query"`
-	Type       string `json:"type"`
-	Normalized string `json:"normalized"`
-	Endpoint   string `json:"endpoint"`
-}

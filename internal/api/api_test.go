@@ -49,13 +49,13 @@ func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, _ Page) (
 
 func TestHandlerRejectsInvalidIP(t *testing.T) {
 	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql"})
-	request := httptest.NewRequest(http.MethodGet, "/v1/ip/not-an-ip", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=not-an-ip", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d", response.Code)
 	}
-	if got := response.Body.String(); got != "{\"error\":{\"code\":\"INVALID_IP\",\"message\":\"path parameter must be a valid IPv4 or IPv6 address\"}}\n" {
+	if got := response.Body.String(); got != "{\"error\":{\"code\":\"INVALID_IP\",\"message\":\"query must be a valid IPv4 or IPv6 address\"}}\n" {
 		t.Fatalf("body = %s", got)
 	}
 }
@@ -109,7 +109,7 @@ func TestHandlerLooksUpTrustedCloudflareClientIP(t *testing.T) {
 
 func TestHandlerIgnoresLegacyEnrichmentParameter(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
-	request := httptest.NewRequest(http.MethodGet, "/v1/ip/1.1.1.1?enrich=1", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&enrich=1", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"enrichment"`) {
@@ -119,7 +119,7 @@ func TestHandlerIgnoresLegacyEnrichmentParameter(t *testing.T) {
 
 func TestHandlerReturnsFullLookupDetails(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
-	request := httptest.NewRequest(http.MethodGet, "/v1/ip/1.1.1.1?details=full", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&details=full", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"details":{"allocations":[`) {
@@ -129,11 +129,23 @@ func TestHandlerReturnsFullLookupDetails(t *testing.T) {
 
 func TestHandlerRejectsInvalidDetailsMode(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
-	request := httptest.NewRequest(http.MethodGet, "/v1/ip/1.1.1.1?details=raw", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&details=raw", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_DETAILS"`) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandlerDoesNotServeLegacyIPPathOrSearchRoute(t *testing.T) {
+	handler := New(fakeRepository{}, Config{})
+	for _, path := range []string{"/v1/ip/1.1.1.1", "/v1/search?q=1.1.1.1"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, body = %s", path, response.Code, response.Body.String())
+		}
 	}
 }
 

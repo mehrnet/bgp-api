@@ -173,7 +173,10 @@ func processRPSLBlock(lines []string, registry string, allocations, routes, autn
 	if inetnum := first("inetnum"); inetnum != "" {
 		parts := strings.Split(inetnum, "-")
 		if len(parts) == 2 {
-			writeAllocation(allocations, padIP(parts[0]), padIP(parts[1]), 4, registry, metadata, first("netname"), "")
+			netname := first("netname")
+			if !isGlobalIANAIPv4Placeholder(parts[0], parts[1], netname) {
+				writeAllocation(allocations, padIP(parts[0]), padIP(parts[1]), 4, registry, metadata, netname, "")
+			}
 		}
 		return
 	}
@@ -198,6 +201,17 @@ func processRPSLBlock(lines []string, registry string, allocations, routes, autn
 			metadata.status, metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.abuseContact, metadata.description,
 		})
 	}
+}
+
+// RIR databases repeat IANA's full IPv4 space as administrative metadata.
+// It is not a usable allocation record for an address or range lookup.
+func isGlobalIANAIPv4Placeholder(start, end, netname string) bool {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(netname)), "iana-") {
+		return false
+	}
+	startIP := net.ParseIP(strings.TrimSpace(start)).To4()
+	endIP := net.ParseIP(strings.TrimSpace(end)).To4()
+	return startIP != nil && endIP != nil && startIP.Equal(net.IPv4zero) && endIP.Equal(net.IPv4(255, 255, 255, 255))
 }
 
 type rpslMetadata struct {

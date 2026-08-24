@@ -78,3 +78,35 @@ func TestProcessRPSLBlockRetainsObjectMetadata(t *testing.T) {
 		t.Fatalf("autnum fields = %#v", fields)
 	}
 }
+
+func TestProcessRPSLBlockSkipsGlobalIANAIPv4Placeholder(t *testing.T) {
+	allocationOutput := &bytes.Buffer{}
+	geoFile, err := os.CreateTemp(t.TempDir(), "geofeeds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer geoFile.Close()
+
+	allocations := csv.NewWriter(allocationOutput)
+	processRPSLBlock([]string{
+		"inetnum: 0.0.0.0 - 255.255.255.255",
+		"netname: IANA-BLK",
+		"country: EU # Country is really world wide",
+		"status: ALLOCATED UNSPECIFIED",
+		"source: RIPE",
+	}, "RIPE", allocations, csv.NewWriter(&bytes.Buffer{}), csv.NewWriter(&bytes.Buffer{}), geoFile)
+	allocations.Flush()
+	if err := allocations.Error(); err != nil {
+		t.Fatal(err)
+	}
+	if output := allocationOutput.String(); output != "" {
+		t.Fatalf("global IANA placeholder was written: %q", output)
+	}
+
+	if !isGlobalIANAIPv4Placeholder("0.0.0.0", "255.255.255.255", "IANA-BLOCK") {
+		t.Fatal("expected global IANA block to be recognized")
+	}
+	if isGlobalIANAIPv4Placeholder("80.0.0.0", "80.255.255.255", "RIPE-CIDR-BLOCK") {
+		t.Fatal("ordinary RIR allocation was treated as an IANA placeholder")
+	}
+}

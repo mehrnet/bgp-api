@@ -71,6 +71,9 @@ type AutnumObject struct {
 type RoutePage struct {
 	Items      []RouteObject  `json:"items"`
 	NextCursor nullableString `json:"next_cursor"`
+	Page       int            `json:"page,omitempty"`
+	TotalPages int            `json:"total_pages,omitempty"`
+	TotalItems int64          `json:"total_items,omitempty"`
 }
 
 type PrefixResponse struct {

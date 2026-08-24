@@ -270,6 +270,9 @@ func (repository *PostgresRepository) LookupASN(ctx context.Context, asn uint32,
 	if err != nil {
 		return nil, err
 	}
+	if page.Numbered {
+		return repository.lookupASNPage(ctx, asn, autnum, page)
+	}
 	rows, err := repository.pool.Query(ctx, `
 		WITH page AS MATERIALIZED (
 			SELECT id
@@ -300,6 +303,42 @@ func (repository *PostgresRepository) LookupASN(ctx context.Context, asn uint32,
 		ASNumber: int(asn),
 		Autnum:   autnum,
 		Routes:   RoutePage{Items: routes, NextCursor: next},
+	}, nil
+}
+
+func (repository *PostgresRepository) lookupASNPage(ctx context.Context, asn uint32, autnum *AutnumObject, page Page) (*ASNResponse, error) {
+	var total int64
+	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM route_objects WHERE asn_number = $1`, asn).Scan(&total); err != nil {
+		return nil, fmt.Errorf("count route objects by ASN: %w", err)
+	}
+	if autnum == nil && total == 0 {
+		return nil, nil
+	}
+	offset := int64(page.Number-1) * int64(page.Limit)
+	rows, err := repository.pool.Query(ctx, `
+		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+		       to_jsonb(route_objects)->>'abuse_contact', description, ''
+		FROM route_objects
+		WHERE asn_number = $1
+		ORDER BY id
+		OFFSET $2
+		LIMIT $3
+	`, asn, offset, page.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("query numbered route objects by ASN: %w", err)
+	}
+	routes, err := readRouteObjects(rows)
+	if err != nil {
+		return nil, err
+	}
+	totalPages := int((total + int64(page.Limit) - 1) / int64(page.Limit))
+	return &ASNResponse{
+		ASN:      "AS" + strconv.FormatUint(uint64(asn), 10),
+		ASNumber: int(asn),
+		Autnum:   autnum,
+		Routes: RoutePage{
+			Items: routes, Page: page.Number, TotalPages: totalPages, TotalItems: total,
+		},
 	}, nil
 }
 

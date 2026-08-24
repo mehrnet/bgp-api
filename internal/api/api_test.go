@@ -55,8 +55,12 @@ func (resourceFakeRepository) LookupRangeSummary(_ context.Context, rangeValue i
 	}, nil
 }
 
-func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, _ Page) (*ASNResponse, error) {
-	return &ASNResponse{ASN: "AS13335", ASNumber: int(asn), Routes: RoutePage{Items: []RouteObject{}}}, nil
+func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, page Page) (*ASNResponse, error) {
+	routes := RoutePage{Items: []RouteObject{}}
+	if page.Numbered {
+		routes.Page, routes.TotalPages, routes.TotalItems = page.Number, 3, 101
+	}
+	return &ASNResponse{ASN: "AS13335", ASNumber: int(asn), Routes: routes}, nil
 }
 
 func TestHandlerRejectsInvalidIP(t *testing.T) {
@@ -196,6 +200,7 @@ func TestHandlerLooksUpPrefixRangeAndASN(t *testing.T) {
 		{"/v1/range?start=1.1.1.1&end=1.1.1.2", `"address_count":"2"`},
 		{"/v1/range?start=80.0.0.0&end=80.255.255.255", `"mode":"summary"`},
 		{"/v1/asn?query=13335", `"asn":"AS13335"`},
+		{"/v1/asn?query=13335&page=2", `"total_pages":3`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
 		response := httptest.NewRecorder()
@@ -214,6 +219,8 @@ func TestHandlerRejectsInvalidResourceQueries(t *testing.T) {
 		"/v1/range?start=1.1.1.1&end=1.1.1.2&kind=unknown",
 		"/v1/asn?query=AS0",
 		"/v1/asn?query=AS13335&limit=101",
+		"/v1/asn?query=AS13335&page=0",
+		"/v1/asn?query=AS13335&page=1&cursor=10",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()

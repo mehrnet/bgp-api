@@ -84,7 +84,9 @@ of overlapping source records, and its country/ASN facets use the same count;
 they are not unique-address coverage percentages. Other ranges return
 `mode: "records"` and cursor-paginated objects.
 `GET /v1/asn?query=:asn` returns an `aut-num` object and the ASN's registered route
-objects. These route objects are registry/IRR records, not a claim that the
+objects. Add `page=:number` to receive numbered pagination with `routes.page`,
+`routes.total_pages`, and `routes.total_items`; `page` and cursor pagination
+cannot be combined. These route objects are registry/IRR records, not a claim that the
 prefix is visible in the global BGP table.
 
 `registry` is lowercase for API consistency. `country_raw` preserves source

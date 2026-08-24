@@ -24,6 +24,9 @@ defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the
 `GET /v1/asn?query=:asn`, and `GET /v1/health`.
 Resource endpoints accept `limit` (1-100) and the `cursor` returned by a
 previous response; responses contain `next_cursor` when a following page exists.
+`GET /v1/asn` additionally accepts `page` (1-100000) for numbered route
+pagination. This mode returns `routes.page`, `routes.total_pages`, and
+`routes.total_items`; do not combine `page` with `cursor`.
 For a canonical IPv4 range from `/0` through `/16`, `/v1/range` returns a
 generated `mode: "summary"` response instead of enumerating objects. The
 summary is built with the daily dataset and includes bounded `/0`, `/8`, or

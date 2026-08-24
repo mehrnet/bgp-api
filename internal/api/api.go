@@ -30,8 +30,10 @@ type ResourceRepository interface {
 }
 
 type Page struct {
-	Cursor int64
-	Limit  int
+	Cursor   int64
+	Limit    int
+	Number   int
+	Numbered bool
 }
 
 type RangeKind string
@@ -324,7 +326,7 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 		writeError(writer, http.StatusBadRequest, "INVALID_ASN", "ASN must be a positive AS number, with or without the AS prefix")
 		return
 	}
-	page, valid := requestPage(writer, request)
+	page, valid := requestASNPage(writer, request)
 	if !valid {
 		return
 	}
@@ -363,6 +365,29 @@ func requestPage(writer http.ResponseWriter, request *http.Request) (Page, bool)
 		}
 		page.Cursor = cursor
 	}
+	return page, true
+}
+
+func requestASNPage(writer http.ResponseWriter, request *http.Request) (Page, bool) {
+	page, valid := requestPage(writer, request)
+	if !valid {
+		return Page{}, false
+	}
+	raw := request.URL.Query().Get("page")
+	if raw == "" {
+		return page, true
+	}
+	if request.URL.Query().Get("cursor") != "" {
+		writeError(writer, http.StatusBadRequest, "INVALID_PAGINATION", "page and cursor cannot be used together")
+		return Page{}, false
+	}
+	number, err := strconv.Atoi(raw)
+	if err != nil || number < 1 || number > 100000 {
+		writeError(writer, http.StatusBadRequest, "INVALID_PAGE", "page must be between 1 and 100000")
+		return Page{}, false
+	}
+	page.Number = number
+	page.Numbered = true
 	return page, true
 }
 

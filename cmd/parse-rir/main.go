@@ -174,9 +174,7 @@ func processRPSLBlock(lines []string, registry string, allocations, routes, autn
 		parts := strings.Split(inetnum, "-")
 		if len(parts) == 2 {
 			netname := first("netname")
-			if !isGlobalIANAIPv4Placeholder(parts[0], parts[1], netname) {
-				writeAllocation(allocations, padIP(parts[0]), padIP(parts[1]), 4, registry, metadata, netname, "")
-			}
+			writeAllocation(allocations, padIP(parts[0]), padIP(parts[1]), 4, registry, metadata, netname, "")
 		}
 		return
 	}
@@ -206,12 +204,7 @@ func processRPSLBlock(lines []string, registry string, allocations, routes, autn
 // RIR databases repeat IANA's full IPv4 space as administrative metadata.
 // It is not a usable allocation record for an address or range lookup.
 func isGlobalIANAIPv4Placeholder(start, end, netname string) bool {
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(netname)), "iana-") {
-		return false
-	}
-	startIP := net.ParseIP(strings.TrimSpace(start)).To4()
-	endIP := net.ParseIP(strings.TrimSpace(end)).To4()
-	return startIP != nil && endIP != nil && startIP.Equal(net.IPv4zero) && endIP.Equal(net.IPv4(255, 255, 255, 255))
+	return isGlobalIANAIPv4PlaceholderKeys(padIP(start), padIP(end), netname)
 }
 
 type rpslMetadata struct {
@@ -279,10 +272,20 @@ func writeAllocation(writer *csv.Writer, start, end string, version int, registr
 	if start == "" || end == "" {
 		return
 	}
+	if version == 4 && isGlobalIANAIPv4PlaceholderKeys(start, end, netname) {
+		return
+	}
 	_ = writer.Write([]string{
 		start, end, fmt.Sprintf("%d", version), registry, metadata.country, netname, metadata.status, allocationDate,
 		metadata.created, metadata.lastModified, metadata.source, metadata.mntBy, metadata.org, metadata.abuseContact, metadata.description,
 	})
+}
+
+func isGlobalIANAIPv4PlaceholderKeys(start, end, netname string) bool {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(netname)), "iana-") {
+		return false
+	}
+	return start == padIP("0.0.0.0") && end == padIP("255.255.255.255")
 }
 
 func writeRoute(writer *csv.Writer, cidr string, version int, asn, registry string, metadata rpslMetadata) {

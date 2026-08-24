@@ -179,12 +179,17 @@ sync_binary() {
 }
 
 [ -n "${DATABASE_URL:-}" ] || die "DATABASE_URL is required"
-for command in curl gzip install jq psql sha256sum tar uname; do require_command "$command"; done
+for command in curl date gzip install jq psql sha256sum tar uname; do require_command "$command"; done
 
 initialize_metadata
 release_json="$(github_api "/repos/$REPOSITORY/releases/latest")"
 latest_tag="$(jq -r '.tag_name' <<<"$release_json")"
 [ -n "$latest_tag" ] || die "could not determine the latest release"
+release_published_at="$(jq -r '.published_at // empty' <<<"$release_json")"
+[ -n "$release_published_at" ] || die "release $latest_tag has no published_at timestamp"
+release_published_epoch="$(date -u --date="$release_published_at" +%s 2>/dev/null)" || die "release $latest_tag has an invalid published_at timestamp"
+server_epoch="$(date -u +%s)"
+[ "$release_published_epoch" -le "$server_epoch" ] || die "release $latest_tag is timestamped later than this server"
 new_schema="$(schema_for_tag "$latest_tag")"
 active_tag="$(psql_query "SELECT release_tag FROM public.bgp_api_dataset WHERE singleton;")"
 active_schema="$(psql_query "SELECT dataset_schema FROM public.bgp_api_dataset WHERE singleton;")"

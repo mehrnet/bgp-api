@@ -78,7 +78,10 @@ systemd service.
 Run it after the GitHub producer build with a lock to prevent overlapping
 imports. Keep `DATABASE_URL` in a root-readable environment file. The
 recommended production schedule is the systemd timer in `deploy/`, which runs
-daily at 05:00 UTC and writes sync output to journald.
+daily at 06:00 UTC, after the 04:00 UTC producer run, and writes sync output to
+journald. It compares the latest published GitHub release tag with the active
+dataset and verifies that the release timestamp is not later than the server's
+NTP-synchronized UTC clock before importing.
 
 ```sh
 sudo cp deploy/bgp-api-postgres-sync.{service,timer} /etc/systemd/system/

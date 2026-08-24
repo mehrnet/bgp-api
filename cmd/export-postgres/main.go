@@ -140,9 +140,9 @@ func writeDatasetMetadata(writer *bufio.Writer, schema, releaseTag, builtAt, sou
 func writeIndexes(writer *bufio.Writer, schema string) {
 	fmt.Fprintf(writer, `
 CREATE INDEX idx_lookup_prefix ON %s.lookup_prefixes (source, prefix_key);
-CREATE INDEX idx_allocation_objects_range ON %s.allocation_objects (ip_version, start_ip_sort, end_ip_sort, id);
 CREATE INDEX idx_route_objects_prefix ON %s.route_objects USING SPGIST (prefix inet_ops);
-CREATE INDEX idx_route_objects_range ON %s.route_objects (ip_version, start_ip_sort, end_ip_sort, id);
+CREATE INDEX idx_allocation_objects_overlap ON %s.allocation_objects USING GIST (numrange(start_ip_sort::numeric, end_ip_sort::numeric, '[]'));
+CREATE INDEX idx_route_objects_overlap ON %s.route_objects USING GIST (numrange(start_ip_sort::numeric, end_ip_sort::numeric, '[]'));
 CREATE INDEX idx_route_objects_asn_id ON %s.route_objects (asn_number, id) WHERE asn_number IS NOT NULL;
 CREATE INDEX idx_autnums_asn_number ON %s.autnums (asn_number) WHERE asn_number IS NOT NULL;
 ANALYZE %s.lookup_prefixes;

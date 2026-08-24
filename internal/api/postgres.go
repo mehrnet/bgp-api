@@ -126,13 +126,21 @@ func (repository *PostgresRepository) LookupRange(ctx context.Context, rangeValu
 	response := &RangeResponse{Range: rangeDescriptor(rangeValue), Kind: kind}
 	if kind == RangeAllocations {
 		rows, err := repository.pool.Query(ctx, `
+			WITH overlap AS MATERIALIZED (
+				SELECT id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date,
+				       created, last_modified, record_source, mnt_by, org, to_jsonb(allocation_objects)->>'abuse_contact' AS abuse_contact, description
+				FROM allocation_objects
+				WHERE ip_version = $1
+				  AND numrange(start_ip_sort::numeric, end_ip_sort::numeric, '[]')
+				      && numrange($2::numeric, $3::numeric, '[]')
+			)
 			SELECT id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date,
-			       created, last_modified, record_source, mnt_by, org, to_jsonb(allocation_objects)->>'abuse_contact', description
-			FROM allocation_objects
-			WHERE ip_version = $1 AND start_ip_sort <= $2 AND end_ip_sort >= $3 AND id > $4
+			       created, last_modified, record_source, mnt_by, org, abuse_contact, description
+			FROM overlap
+			WHERE id > $4
 			ORDER BY id
 			LIMIT $5
-		`, rangeValue.Version, rangeValue.End.SortKey, rangeValue.Start.SortKey, page.Cursor, page.Limit+1)
+		`, rangeValue.Version, rangeValue.Start.SortKey, rangeValue.End.SortKey, page.Cursor, page.Limit+1)
 		if err != nil {
 			return nil, fmt.Errorf("query allocation objects by range: %w", err)
 		}
@@ -145,13 +153,21 @@ func (repository *PostgresRepository) LookupRange(ctx context.Context, rangeValu
 	}
 
 	rows, err := repository.pool.Query(ctx, `
-		SELECT id, prefix::text, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
-		       to_jsonb(route_objects)->>'abuse_contact', description, ''
-		FROM route_objects
-		WHERE ip_version = $1 AND start_ip_sort <= $2 AND end_ip_sort >= $3 AND id > $4
+		WITH overlap AS MATERIALIZED (
+			SELECT id, prefix::text AS prefix, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+			       to_jsonb(route_objects)->>'abuse_contact' AS abuse_contact, description
+			FROM route_objects
+			WHERE ip_version = $1
+			  AND numrange(start_ip_sort::numeric, end_ip_sort::numeric, '[]')
+			      && numrange($2::numeric, $3::numeric, '[]')
+		)
+		SELECT id, prefix, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org,
+		       abuse_contact, description, ''
+		FROM overlap
+		WHERE id > $4
 		ORDER BY id
 		LIMIT $5
-	`, rangeValue.Version, rangeValue.End.SortKey, rangeValue.Start.SortKey, page.Cursor, page.Limit+1)
+	`, rangeValue.Version, rangeValue.Start.SortKey, rangeValue.End.SortKey, page.Cursor, page.Limit+1)
 	if err != nil {
 		return nil, fmt.Errorf("query route objects by range: %w", err)
 	}

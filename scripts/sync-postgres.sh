@@ -195,9 +195,8 @@ active_tag="$(psql_query "SELECT release_tag FROM public.bgp_api_dataset WHERE s
 active_schema="$(psql_query "SELECT dataset_schema FROM public.bgp_api_dataset WHERE singleton;")"
 
 if [ "$active_tag" = "$latest_tag" ]; then
-  sync_binary "$latest_tag"
-  printf 'release %s is already active\n' "$latest_tag"
-  exit 0
+	printf 'release %s is already active\n' "$latest_tag"
+	exit 0
 fi
 
 dump="$(download_postgres_dump "$latest_tag")"

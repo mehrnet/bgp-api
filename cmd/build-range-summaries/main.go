@@ -164,11 +164,11 @@ func persist(database *sql.DB, summaries map[summaryKey]*summary) error {
 	defer insert.Close()
 	for _, key := range keys {
 		item := summaries[key]
-		countries, err := json.Marshal(topFacets(item.countries))
+		countries, err := json.Marshal(facets(item.countries))
 		if err != nil {
 			return err
 		}
-		asns, err := json.Marshal(topFacets(item.asns))
+		asns, err := json.Marshal(facets(item.asns))
 		if err != nil {
 			return err
 		}
@@ -214,7 +214,7 @@ func canonicalASN(value string) string {
 	return "AS" + value
 }
 
-func topFacets(values map[string]int64) []facet {
+func facets(values map[string]int64) []facet {
 	items := make([]facet, 0, len(values))
 	for value, count := range values {
 		items = append(items, facet{Value: value, RecordCount: count})

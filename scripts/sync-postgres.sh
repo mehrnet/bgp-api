@@ -219,7 +219,7 @@ for table in allocation_objects route_objects autnums; do
 done
 metadata_count="$(psql_query "SELECT count(*) FROM \"$new_schema\".dataset_metadata;")"
 [ "$metadata_count" -eq 1 ] || die "new dataset_metadata table must have exactly one row"
-for index in idx_lookup_prefix idx_allocation_objects_range idx_route_objects_prefix idx_route_objects_asn_id idx_autnums_asn_number; do
+for index in idx_lookup_prefix idx_allocation_objects_overlap idx_route_objects_prefix idx_route_objects_overlap idx_route_objects_asn_id idx_autnums_asn_number; do
   index_exists="$(psql_query "SELECT to_regclass('$new_schema.$index') IS NOT NULL;")"
   [ "$index_exists" = "t" ] || die "new $index index is missing"
 done

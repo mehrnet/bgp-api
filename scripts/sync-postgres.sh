@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Import the latest PostgreSQL release into a new schema, then atomically move
-# the public lookup_prefixes view to it. Run this from the database server.
+# the public API views to it. Run this from the database server.
 set -euo pipefail
 
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"

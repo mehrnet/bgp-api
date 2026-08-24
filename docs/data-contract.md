@@ -75,7 +75,14 @@ fields may be `null` only for old local fixtures or pre-metadata datasets.
 `GET /v1/prefix?prefix=:cidr` returns a normalized CIDR descriptor, its
 covering allocation record, and cursor-paginated registered RPSL route
 objects. `GET /v1/range?start=:ip&end=:ip` returns overlapping allocation
-records by default; use `kind=routes` for overlapping route objects.
+records by default; use `kind=routes` for overlapping route objects. A
+canonical IPv4 range from `/0` through `/16` returns `mode: "summary"` from
+the generated `range_summaries` dataset instead. These requests are composed
+from at most 128 fixed `/8` or `/16` buckets, so broad ranges do not trigger an
+unbounded overlap scan. The summary's allocation and route figures are counts
+of overlapping source records, and its country/ASN facets use the same count;
+they are not unique-address coverage percentages. Other ranges return
+`mode: "records"` and cursor-paginated objects.
 `GET /v1/asn?query=:asn` returns an `aut-num` object and the ASN's registered route
 objects. These route objects are registry/IRR records, not a claim that the
 prefix is visible in the global BGP table.

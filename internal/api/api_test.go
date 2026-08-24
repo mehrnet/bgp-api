@@ -40,7 +40,19 @@ func (resourceFakeRepository) LookupPrefix(_ context.Context, prefix ipkey.Parse
 }
 
 func (resourceFakeRepository) LookupRange(_ context.Context, rangeValue ipkey.ParsedRange, kind RangeKind, _ Page) (*RangeResponse, error) {
-	return &RangeResponse{Range: RangeDescriptor{StartIP: rangeValue.Start.Canonical, EndIP: rangeValue.End.Canonical, Version: rangeValue.Version, AddressCount: rangeValue.AddressCount}, Kind: kind, Allocations: []AllocationObject{}}, nil
+	return &RangeResponse{Range: RangeDescriptor{StartIP: rangeValue.Start.Canonical, EndIP: rangeValue.End.Canonical, Version: rangeValue.Version, AddressCount: rangeValue.AddressCount}, Kind: kind, Mode: "records", Allocations: []AllocationObject{}}, nil
+}
+
+func (resourceFakeRepository) LookupRangeSummary(_ context.Context, rangeValue ipkey.ParsedRange, kind RangeKind) (*RangeResponse, error) {
+	return &RangeResponse{
+		Range: rangeDescriptor(rangeValue),
+		Kind:  kind,
+		Mode:  "summary",
+		Summary: &RangeSummary{
+			Aggregation: "overlapping_source_records", BucketPrefixLength: 16, Buckets: 32,
+			Countries: []RangeFacet{}, ASNs: []RangeFacet{},
+		},
+	}, nil
 }
 
 func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, _ Page) (*ASNResponse, error) {
@@ -182,6 +194,7 @@ func TestHandlerLooksUpPrefixRangeAndASN(t *testing.T) {
 	}{
 		{"/v1/prefix?prefix=1.1.1.42/24", `"cidr":"1.1.1.0/24"`},
 		{"/v1/range?start=1.1.1.1&end=1.1.1.2", `"address_count":"2"`},
+		{"/v1/range?start=80.0.0.0&end=80.255.255.255", `"mode":"summary"`},
 		{"/v1/asn?query=13335", `"asn":"AS13335"`},
 	} {
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)

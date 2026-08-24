@@ -137,7 +137,10 @@ jobs:
           mkdir release
           tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
       - name: Build indexed database
-        run: go run ./cmd/build-prefix-index mehrnet_bgp.db
+        run: |
+          go run ./cmd/build-prefix-index mehrnet_bgp.db
+          go run ./cmd/build-range-summaries mehrnet_bgp.db
+          go run ./cmd/validate-database -indexed mehrnet_bgp.db
       - name: Name release dataset
         run: |
           data_tag="$(date -u +'%Y.%m.%d-%H%M')"

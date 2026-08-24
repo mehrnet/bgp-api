@@ -84,9 +84,29 @@ type RangeResponse struct {
 	Meta        *ResponseMeta      `json:"meta,omitempty"`
 	Range       RangeDescriptor    `json:"range"`
 	Kind        RangeKind          `json:"kind"`
+	Mode        string             `json:"mode"`
+	Summary     *RangeSummary      `json:"summary,omitempty"`
 	Allocations []AllocationObject `json:"allocations,omitempty"`
 	Routes      []RouteObject      `json:"routes,omitempty"`
 	NextCursor  nullableString     `json:"next_cursor"`
+}
+
+type RangeFacet struct {
+	Value       string `json:"value"`
+	RecordCount int64  `json:"record_count"`
+}
+
+// RangeSummary is generated from source objects during the daily dataset
+// build. Counts are overlapping RIR/IRR object records, not unique-address
+// coverage, because source ranges can legitimately overlap.
+type RangeSummary struct {
+	Aggregation        string       `json:"aggregation"`
+	BucketPrefixLength int          `json:"bucket_prefix_length"`
+	Buckets            int          `json:"buckets"`
+	AllocationRecords  int64        `json:"allocation_records"`
+	RouteRecords       int64        `json:"route_records"`
+	Countries          []RangeFacet `json:"countries"`
+	ASNs               []RangeFacet `json:"asns"`
 }
 
 type ASNResponse struct {

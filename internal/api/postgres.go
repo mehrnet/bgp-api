@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -123,7 +125,7 @@ func (repository *PostgresRepository) LookupPrefix(ctx context.Context, prefix i
 }
 
 func (repository *PostgresRepository) LookupRange(ctx context.Context, rangeValue ipkey.ParsedRange, kind RangeKind, page Page) (*RangeResponse, error) {
-	response := &RangeResponse{Range: rangeDescriptor(rangeValue), Kind: kind}
+	response := &RangeResponse{Range: rangeDescriptor(rangeValue), Kind: kind, Mode: "records"}
 	if kind == RangeAllocations {
 		rows, err := repository.pool.Query(ctx, `
 			WITH overlap AS MATERIALIZED (
@@ -177,6 +179,90 @@ func (repository *PostgresRepository) LookupRange(ctx context.Context, rangeValu
 	}
 	response.Routes, response.NextCursor = routePage(routes, page.Limit)
 	return response, nil
+}
+
+func (repository *PostgresRepository) LookupRangeSummary(ctx context.Context, rangeValue ipkey.ParsedRange, kind RangeKind) (*RangeResponse, error) {
+	keys, ok := ipkey.SummaryPrefixKeys(rangeValue)
+	if !ok {
+		return nil, fmt.Errorf("range is not eligible for a generated summary")
+	}
+	rows, err := repository.pool.Query(ctx, `
+		SELECT prefix_length, allocation_records, route_records, countries::text, asns::text
+		FROM range_summaries
+		WHERE cidr = ANY($1::cidr[])
+	`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("query generated range summaries: %w", err)
+	}
+	defer rows.Close()
+
+	response := &RangeResponse{Range: rangeDescriptor(rangeValue), Kind: kind, Mode: "summary"}
+	summary := &RangeSummary{Aggregation: "overlapping_source_records", BucketPrefixLength: summaryBucketLength(keys[0]), Buckets: len(keys), Countries: []RangeFacet{}, ASNs: []RangeFacet{}}
+	countries := make(map[string]int64)
+	asns := make(map[string]int64)
+	for rows.Next() {
+		var bucketLength int
+		var allocationRecords, routeRecords int64
+		var rawCountries, rawASNs string
+		if err := rows.Scan(&bucketLength, &allocationRecords, &routeRecords, &rawCountries, &rawASNs); err != nil {
+			return nil, fmt.Errorf("read generated range summary: %w", err)
+		}
+		if summary.BucketPrefixLength == 0 {
+			summary.BucketPrefixLength = bucketLength
+		}
+		summary.AllocationRecords += allocationRecords
+		summary.RouteRecords += routeRecords
+		if err := mergeFacets(countries, rawCountries); err != nil {
+			return nil, err
+		}
+		if err := mergeFacets(asns, rawASNs); err != nil {
+			return nil, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate generated range summaries: %w", err)
+	}
+	summary.Countries = rankFacets(countries)
+	summary.ASNs = rankFacets(asns)
+	response.Summary = summary
+	return response, nil
+}
+
+func mergeFacets(target map[string]int64, raw string) error {
+	items := []RangeFacet{}
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return fmt.Errorf("decode generated range facets: %w", err)
+	}
+	for _, item := range items {
+		target[item.Value] += item.RecordCount
+	}
+	return nil
+}
+
+func rankFacets(values map[string]int64) []RangeFacet {
+	items := make([]RangeFacet, 0, len(values))
+	for value, count := range values {
+		items = append(items, RangeFacet{Value: value, RecordCount: count})
+	}
+	sort.Slice(items, func(left, right int) bool {
+		if items[left].RecordCount != items[right].RecordCount {
+			return items[left].RecordCount > items[right].RecordCount
+		}
+		return items[left].Value < items[right].Value
+	})
+	if len(items) > 10 {
+		return items[:10]
+	}
+	return items
+}
+
+func summaryBucketLength(key string) int {
+	index := strings.LastIndexByte(key, '/')
+	if index == -1 {
+		return 0
+	}
+	length, _ := strconv.Atoi(key[index+1:])
+	return length
 }
 
 func (repository *PostgresRepository) LookupASN(ctx context.Context, asn uint32, page Page) (*ASNResponse, error) {

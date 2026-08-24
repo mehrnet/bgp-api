@@ -88,6 +88,11 @@ func main() {
 			query:   "SELECT asn, registry, country, as_name, org, status, created, last_modified, source, mnt_by, abuse_contact, descr FROM autnums",
 			mapRow:  autnumRow,
 		},
+		{
+			name:    "range_summaries",
+			columns: []string{"cidr", "ip_version", "prefix_length", "allocation_records", "route_records", "countries", "asns"},
+			query:   "SELECT cidr, ip_version, prefix_length, allocation_records, route_records, countries, asns FROM range_summaries",
+		},
 	}
 	for _, export := range exports {
 		count, err := copyTable(database, writer, *schema, export)
@@ -129,7 +134,12 @@ CREATE TABLE %s.autnums (
 CREATE TABLE %s.dataset_metadata (
   release_tag TEXT, built_at TEXT, source_commit TEXT
 );
-`, schema, schema, schema, schema, schema)
+CREATE TABLE %s.range_summaries (
+  cidr CIDR PRIMARY KEY, ip_version SMALLINT NOT NULL, prefix_length SMALLINT NOT NULL,
+  allocation_records BIGINT NOT NULL, route_records BIGINT NOT NULL,
+  countries JSONB NOT NULL, asns JSONB NOT NULL
+);
+`, schema, schema, schema, schema, schema, schema)
 }
 
 func writeDatasetMetadata(writer *bufio.Writer, schema, releaseTag, builtAt, sourceCommit string) {
@@ -149,7 +159,8 @@ ANALYZE %s.lookup_prefixes;
 ANALYZE %s.allocation_objects;
 ANALYZE %s.route_objects;
 ANALYZE %s.autnums;
-`, schema, schema, schema, schema, schema, schema, schema, schema, schema, schema)
+ANALYZE %s.range_summaries;
+`, schema, schema, schema, schema, schema, schema, schema, schema, schema, schema, schema)
 }
 
 func copyTable(database *sql.DB, writer *bufio.Writer, schema string, export tableExport) (int, error) {

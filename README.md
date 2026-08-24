@@ -24,6 +24,12 @@ defaults to `8`. Set `ORIGIN_AUTH_TOKEN` only when an upstream proxy injects the
 `GET /v1/asn?query=:asn`, and `GET /v1/health`.
 Resource endpoints accept `limit` (1-100) and the `cursor` returned by a
 previous response; responses contain `next_cursor` when a following page exists.
+For a canonical IPv4 range from `/0` through `/16`, `/v1/range` returns a
+generated `mode: "summary"` response instead of enumerating objects. The
+summary is built with the daily dataset and includes bounded `/0`, `/8`, or
+`/16` bucket totals plus top country and ASN record facets. Non-CIDR ranges,
+IPv6 ranges, and narrower IPv4 ranges return `mode: "records"` with normal
+cursor pagination.
 Successful lookup/resource responses include `meta.dataset` with the active
 release tag, producer build timestamp, activation timestamp, and producer
 source commit. `/v1/health` exposes the same dataset object.
@@ -52,7 +58,8 @@ The producer publishes `mehrnet_bgp_postgres.sql.gz`, a compressed PostgreSQL
 `COPY` snapshot, alongside static Linux API binaries built from the same source
 commit. The dump includes `lookup_prefixes` for low-latency point lookups plus
 normalized `allocation_objects`, `route_objects`, and `autnums` tables for
-range, CIDR, and ASN resources.
+range, CIDR, and ASN resources, plus generated `range_summaries` for broad
+IPv4 range resources.
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
@@ -62,7 +69,7 @@ export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
 The synchronizer uses one PostgreSQL database. It imports the release into a
 versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
 stable `public.lookup_prefixes`, `public.allocation_objects`,
-`public.route_objects`, and `public.autnums` views, records the active dataset
+`public.route_objects`, `public.autnums`, and `public.range_summaries` views, records the active dataset
 metadata in `public.bgp_api_dataset`, then removes the old schema. After a
 successful dataset swap, it installs the matching `bgp-api-linux-$arch` binary
 when the release provides one and restarts `bgp-api`. If import or validation

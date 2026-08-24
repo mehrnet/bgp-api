@@ -24,7 +24,7 @@ func main() {
 
 	tables := []string{"allocations", "routes", "autnums", "geolocations"}
 	if *indexed {
-		tables = append(tables, "lookup_prefixes")
+		tables = append(tables, "lookup_prefixes", "range_summaries")
 	}
 	for _, table := range tables {
 		var count int64

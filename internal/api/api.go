@@ -25,6 +25,7 @@ type MetadataRepository interface {
 type ResourceRepository interface {
 	LookupPrefix(context.Context, ipkey.ParsedPrefix, Page) (*PrefixResponse, error)
 	LookupRange(context.Context, ipkey.ParsedRange, RangeKind, Page) (*RangeResponse, error)
+	LookupRangeSummary(context.Context, ipkey.ParsedRange, RangeKind) (*RangeResponse, error)
 	LookupASN(context.Context, uint32, Page) (*ASNResponse, error)
 }
 
@@ -295,7 +296,13 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 	if !valid {
 		return
 	}
-	response, err := resources.LookupRange(request.Context(), rangeValue, kind, page)
+	var response *RangeResponse
+	var err error
+	if _, broad := ipkey.SummaryPrefixKeys(rangeValue); broad {
+		response, err = resources.LookupRangeSummary(request.Context(), rangeValue, kind)
+	} else {
+		response, err = resources.LookupRange(request.Context(), rangeValue, kind, page)
+	}
 	if err != nil {
 		log.Printf("range lookup failed for %s-%s: %v", rangeValue.Start.Canonical, rangeValue.End.Canonical, err)
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected range lookup failure")

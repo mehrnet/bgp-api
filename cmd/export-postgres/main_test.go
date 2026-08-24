@@ -29,3 +29,15 @@ func TestWriteIndexesUsesRangeOverlapIndexes(t *testing.T) {
 		t.Fatal("index dump still contains the obsolete B-tree range indexes")
 	}
 }
+
+func TestWriteSchemaIncludesGeneratedRangeSummaries(t *testing.T) {
+	var output bytes.Buffer
+	writer := bufio.NewWriter(&output)
+	writeSchema(writer, "bgp_test")
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "CREATE TABLE bgp_test.range_summaries") {
+		t.Fatal("schema does not include generated range summaries")
+	}
+}

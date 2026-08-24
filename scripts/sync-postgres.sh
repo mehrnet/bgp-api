@@ -14,6 +14,7 @@ readonly LOOKUP_VIEW_SELECT="source, prefix_key, prefix_length, start_ip_sort, e
 readonly ALLOCATION_VIEW_SELECT="id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date, created, last_modified, record_source, mnt_by, org, abuse_contact, description"
 readonly ROUTE_VIEW_SELECT="id, prefix, prefix_length, start_ip_sort, end_ip_sort, ip_version, origin_asn, asn_number, registry, record_source, mnt_by, org, abuse_contact, description"
 readonly AUTNUM_COLUMNS="id, asn, asn_number, registry, country, as_name, org, status, created, last_modified, record_source, mnt_by, abuse_contact, description"
+readonly RANGE_SUMMARY_COLUMNS="cidr, ip_version, prefix_length, allocation_records, route_records, countries, asns"
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -213,7 +214,7 @@ gzip -dc "$dump" | psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet
 
 row_count="$(psql_query "SELECT count(*) FROM \"$new_schema\".lookup_prefixes;")"
 [ "$row_count" -gt 0 ] || die "new lookup_prefixes table is empty"
-for table in allocation_objects route_objects autnums; do
+for table in allocation_objects route_objects autnums range_summaries; do
   object_count="$(psql_query "SELECT count(*) FROM \"$new_schema\".$table;")"
   [ "$object_count" -gt 0 ] || die "new $table table is empty"
 done
@@ -228,7 +229,7 @@ source_commit="$(psql_query "SELECT coalesce(source_commit, '') FROM \"$new_sche
 
 psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet <<SQL
 BEGIN;
-DROP VIEW IF EXISTS public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums;
+DROP VIEW IF EXISTS public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums, public.range_summaries;
 CREATE VIEW public.lookup_prefixes AS
   SELECT $LOOKUP_VIEW_SELECT FROM "$new_schema".lookup_prefixes;
 CREATE VIEW public.allocation_objects AS
@@ -237,8 +238,10 @@ CREATE VIEW public.route_objects AS
   SELECT $ROUTE_VIEW_SELECT FROM "$new_schema".route_objects;
 CREATE VIEW public.autnums AS
   SELECT $AUTNUM_COLUMNS FROM "$new_schema".autnums;
+CREATE VIEW public.range_summaries AS
+  SELECT $RANGE_SUMMARY_COLUMNS FROM "$new_schema".range_summaries;
 GRANT USAGE ON SCHEMA public TO "$DATABASE_ROLE";
-GRANT SELECT ON TABLE public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums TO "$DATABASE_ROLE";
+GRANT SELECT ON TABLE public.lookup_prefixes, public.allocation_objects, public.route_objects, public.autnums, public.range_summaries TO "$DATABASE_ROLE";
 INSERT INTO public.bgp_api_dataset (singleton, release_tag, dataset_schema, activated_at)
   VALUES (TRUE, '$latest_tag', '$new_schema', now())
   ON CONFLICT (singleton) DO UPDATE

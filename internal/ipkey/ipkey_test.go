@@ -63,3 +63,33 @@ func TestParseRangeCalculatesAddressCount(t *testing.T) {
 		t.Fatal("mixed IP versions parsed")
 	}
 }
+
+func TestSummaryPrefixKeysUseBoundedIPv4Buckets(t *testing.T) {
+	for _, test := range []struct {
+		start string
+		end   string
+		first string
+		count int
+	}{
+		{"80.0.0.0", "80.255.255.255", "80.0.0.0/8", 1},
+		{"80.0.0.0", "81.255.255.255", "80.0.0.0/8", 2},
+		{"80.0.0.0", "80.31.255.255", "80.0.0.0/16", 32},
+	} {
+		rangeValue, ok := ParseRange(test.start, test.end)
+		if !ok {
+			t.Fatalf("parse range %s-%s", test.start, test.end)
+		}
+		keys, ok := SummaryPrefixKeys(rangeValue)
+		if !ok || len(keys) != test.count || keys[0] != test.first {
+			t.Fatalf("summary keys for %s-%s = %#v, %v", test.start, test.end, keys, ok)
+		}
+	}
+
+	partial, ok := ParseRange("80.0.0.1", "80.255.255.255")
+	if !ok {
+		t.Fatal("parse partial range")
+	}
+	if _, ok := SummaryPrefixKeys(partial); ok {
+		t.Fatal("non-CIDR range received a generated summary")
+	}
+}

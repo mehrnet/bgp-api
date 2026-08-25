@@ -265,19 +265,15 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-      - name: Keep GHCR deployment images public
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const packages = ["bgp-api", "bgp-api-postgres", "bgp-api-sync"];
-            for (const packageName of packages) {
-              await github.request("PATCH /orgs/{org}/packages/{package_type}/{package_name}", {
-                org: context.repo.owner,
-                package_type: "container",
-                package_name: packageName,
-                visibility: "public",
-              });
-            }
+      - name: Verify deployment images are publicly pullable
+        run: |
+          docker logout ghcr.io
+          for image in \
+            "ghcr.io/${GITHUB_REPOSITORY_OWNER}/bgp-api:${RELEASE_TAG}-amd64" \
+            "ghcr.io/${GITHUB_REPOSITORY_OWNER}/bgp-api-postgres:${RELEASE_TAG}-amd64" \
+            "ghcr.io/${GITHUB_REPOSITORY_OWNER}/bgp-api-sync:${RELEASE_TAG}-amd64"; do
+            docker manifest inspect "$image" >/dev/null
+          done
       - name: Write Docker deployment manifest
         run: |
           jq -n \

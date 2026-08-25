@@ -38,5 +38,5 @@ FROM :"dataset_schema".dataset_metadata
 LIMIT 1;
 
 GRANT USAGE ON SCHEMA public TO bgp_api;
-GRANT SELECT ON public.lookup_prefixes, public.allocation_objects,
+GRANT SELECT ON public.bgp_api_dataset, public.lookup_prefixes, public.allocation_objects,
   public.route_objects, public.autnums, public.range_summaries TO bgp_api;

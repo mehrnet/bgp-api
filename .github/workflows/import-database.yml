@@ -202,6 +202,7 @@ jobs:
         run: |
           docker exec bgp-postgres-build psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -c "CHECKPOINT;"
+          docker exec --user root bgp-postgres-build chmod -R a+rX /var/lib/postgresql/mehrnet-data
           docker stop --time 120 bgp-postgres-build || {
             state="$(docker inspect --format '{{.State.Status}}' bgp-postgres-build 2>/dev/null || true)"
             if [ "$state" != "exited" ] && [ "$state" != "dead" ]; then

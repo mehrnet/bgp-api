@@ -24,6 +24,7 @@ type patchTable struct {
 	sourceTable   string
 	sourceColumns []string
 	targetColumns []string
+	keyColumns    []string
 	mapRow        func([]sql.NullString) ([]sql.NullString, error)
 }
 
@@ -81,18 +82,21 @@ func main() {
 			sourceTable:   "lookup_prefixes",
 			sourceColumns: []string{"source", "prefix_key", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "cidr", "asn", "region", "city", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "abuse_contact", "description"},
 			targetColumns: []string{"source", "prefix_key", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "cidr", "asn", "region", "city", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+			keyColumns:    []string{"source", "prefix_key"},
 		},
 		{
 			name:          "allocation_objects",
 			sourceTable:   "allocations",
 			sourceColumns: []string{"start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "status", "allocation_date", "created", "last_modified", "source", "mnt_by", "org", "abuse_contact", "descr"},
 			targetColumns: []string{"start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+			keyColumns:    []string{"start_ip_sort", "end_ip_sort", "ip_version"},
 		},
 		{
 			name:          "route_objects",
 			sourceTable:   "routes",
 			sourceColumns: []string{"cidr", "start_ip_sort", "end_ip_sort", "ip_version", "asn", "registry", "source", "mnt_by", "org", "abuse_contact", "descr"},
 			targetColumns: []string{"prefix", "prefix_length", "start_ip_sort", "end_ip_sort", "ip_version", "origin_asn", "asn_number", "registry", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+			keyColumns:    []string{"prefix", "origin_asn", "registry"},
 			mapRow:        routeObjectRow,
 		},
 		{
@@ -100,6 +104,7 @@ func main() {
 			sourceTable:   "autnums",
 			sourceColumns: []string{"asn", "registry", "country", "as_name", "org", "status", "created", "last_modified", "source", "mnt_by", "abuse_contact", "descr"},
 			targetColumns: []string{"asn", "asn_number", "registry", "country", "as_name", "org", "status", "created", "last_modified", "record_source", "mnt_by", "abuse_contact", "description"},
+			keyColumns:    []string{"asn", "registry"},
 			mapRow:        autnumRow,
 		},
 		{
@@ -107,6 +112,7 @@ func main() {
 			sourceTable:   "range_summaries",
 			sourceColumns: []string{"cidr", "ip_version", "prefix_length", "allocation_records", "route_records", "countries", "asns"},
 			targetColumns: []string{"cidr", "ip_version", "prefix_length", "allocation_records", "route_records", "countries", "asns"},
+			keyColumns:    []string{"cidr"},
 		},
 	}
 
@@ -135,7 +141,7 @@ func writeTablePatch(database *sql.DB, writer *bufio.Writer, table patchTable) (
 		return patchCounts{}, err
 	}
 	if deleted > 0 {
-		if _, err := fmt.Fprintf(writer, "DELETE FROM :\"dataset_schema\".%s AS target USING patch_%s_deleted AS patch WHERE %s;\nDROP TABLE patch_%s_deleted;\n", table.name, table.name, nullSafeMatch("target", "patch", table.targetColumns), table.name); err != nil {
+		if _, err := fmt.Fprintf(writer, "CREATE INDEX ON patch_%s_deleted (%s);\nANALYZE patch_%s_deleted;\nDELETE FROM :\"dataset_schema\".%s AS target USING patch_%s_deleted AS patch WHERE %s;\nDROP TABLE patch_%s_deleted;\n", table.name, strings.Join(table.keyColumns, ", "), table.name, table.name, table.name, matchClause("target", "patch", table.targetColumns, table.keyColumns), table.name); err != nil {
 			return patchCounts{}, err
 		}
 	}
@@ -208,10 +214,18 @@ func writeDelta(database *sql.DB, writer *bufio.Writer, table patchTable, direct
 	return count, nil
 }
 
-func nullSafeMatch(left, right string, columns []string) string {
-	conditions := make([]string, len(columns))
-	for index, column := range columns {
-		conditions[index] = fmt.Sprintf("%s.%s IS NOT DISTINCT FROM %s.%s", left, column, right, column)
+func matchClause(left, right string, columns, keyColumns []string) string {
+	keyColumn := make(map[string]bool, len(keyColumns))
+	conditions := make([]string, 0, len(columns))
+	for _, column := range keyColumns {
+		keyColumn[column] = true
+		conditions = append(conditions, fmt.Sprintf("%s.%s = %s.%s", left, column, right, column))
+	}
+	for _, column := range columns {
+		if keyColumn[column] {
+			continue
+		}
+		conditions = append(conditions, fmt.Sprintf("%s.%s IS NOT DISTINCT FROM %s.%s", left, column, right, column))
 	}
 	return strings.Join(conditions, " AND ")
 }

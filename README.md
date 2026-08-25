@@ -69,29 +69,39 @@ export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
 ./scripts/sync-postgres.sh
 ```
 
-The synchronizer uses one PostgreSQL database. It imports the release into a
+The default synchronizer mode is `patch`. It locates every published release
+after the active release, verifies each `postgres-patch-manifest.json` and its
+SHA-256-checked patch asset, then applies those patches strictly in order to
+the active schema. A patch is accepted only when its `base_release` exactly
+matches the locally active release. Existing PostgreSQL indexes are updated
+incrementally; no second schema or full indexed dataset is created.
+
+After the final patch, the synchronizer installs the matching
+`bgp-api-linux-$arch` binary and restarts `bgp-api`. If a patch fails, its SQL
+transaction rolls back and dataset metadata is not advanced. An unavailable or
+incompatible chain fails closed rather than silently using disk for a full
+import.
+
+Use `BGP_API_SYNC_MODE=snapshot` only to bootstrap a new database or recover
+from a missing patch chain. Snapshot mode imports the latest release into a
 versioned `bgp_YYYYMMDD_HHMM` schema, validates it, atomically repoints the
-stable `public.lookup_prefixes`, `public.allocation_objects`,
-`public.route_objects`, `public.autnums`, and `public.range_summaries` views, records the active dataset
-metadata in `public.bgp_api_dataset`, then removes the old schema. After a
-successful dataset swap, it installs the matching `bgp-api-linux-$arch` binary
-when the release provides one and restarts `bgp-api`. If import or validation
-fails, the existing public views and running API binary are left untouched.
+stable public views, and removes the old schema after activation. It needs
+temporary disk for both datasets.
 
 It requires `curl`, `jq`, `gzip`, `install`, `psql`, `sha256sum`, `tar`, and
 `uname`. The public GitHub API is sufficient for its daily run; set
 `BGP_API_GITHUB_TOKEN` only to raise the GitHub API rate limit. Set
 `BGP_API_SYNC_BINARY=0` to disable binary installation, `BGP_API_BINARY_PATH` to
-change the install path, or `BGP_API_SERVICE_NAME` to change the restarted
-systemd service.
+change the install path, `BGP_API_SERVICE_NAME` to change the restarted service,
+or `BGP_API_SYNC_MODE=snapshot` for explicit bootstrap/recovery.
 
 Run it after the GitHub producer build with a lock to prevent overlapping
 imports. Keep `DATABASE_URL` in a root-readable environment file. The
 recommended production schedule is the systemd timer in `deploy/`, which runs
 daily at 06:00 UTC, after the 04:00 UTC producer run, and writes sync output to
 journald. It compares the latest published GitHub release tag with the active
-dataset and verifies that the release timestamp is not later than the server's
-NTP-synchronized UTC clock before importing.
+dataset, verifies that each patch release timestamp is not later than the
+server's NTP-synchronized UTC clock, and applies the patch chain in order.
 
 ```sh
 sudo cp deploy/bgp-api-postgres-sync.{service,timer} /etc/systemd/system/

@@ -37,6 +37,7 @@ func TestWriteTablePatchProducesSetBasedDelta(t *testing.T) {
 		sourceTable:   "allocations",
 		sourceColumns: []string{"start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "status", "allocation_date", "created", "last_modified", "source", "mnt_by", "org", "abuse_contact", "descr"},
 		targetColumns: []string{"start_ip_sort", "end_ip_sort", "ip_version", "registry", "country", "netname", "status", "allocation_date", "created", "last_modified", "record_source", "mnt_by", "org", "abuse_contact", "description"},
+		keyColumns:    []string{"start_ip_sort", "end_ip_sort", "ip_version"},
 	}
 	var output bytes.Buffer
 	writer := bufio.NewWriter(&output)

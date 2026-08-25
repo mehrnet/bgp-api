@@ -109,6 +109,49 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now bgp-api-postgres-sync.timer
 ```
 
+## Docker Deployment
+
+Docker is the fast bootstrap route. Each release publishes digest-pinned amd64
+API, updater, and pre-indexed PostgreSQL images in
+`docker-deployment-manifest.json`. The database image seeds the named volume on
+the first `docker compose up`; PostgreSQL starts with its indexes already built.
+It is intentionally an amd64 image because PostgreSQL data directories are
+architecture-specific.
+
+Copy the Compose files and create a private environment file from the example.
+Set the three image values from the release deployment manifest and set a unique
+origin token. The GHCR packages must be public for anonymous pulls; otherwise
+authenticate the host with `docker login ghcr.io` before deploying.
+
+```sh
+cp .env.docker.example .env
+docker compose up -d
+```
+
+The Compose file exposes only the API on `127.0.0.1:3102`; PostgreSQL has no
+host port and is reachable only on its internal Compose network. Its bootstrap
+cluster uses trust authentication inside that private network, so do not attach
+untrusted containers to it or publish the PostgreSQL service.
+
+Run the Docker synchronizer after a producer release. It verifies the release
+manifest and checksums, applies the same sequential logical patch chain to the
+existing named volume, then recreates only the API container using the new
+digest-pinned image. It never replaces the PostgreSQL volume during a normal
+update.
+
+```sh
+./scripts/sync-docker.sh
+```
+
+For a daily host cron job at 05:00 UTC:
+
+```sh
+0 5 * * * cd /srv/bgp-api && ./scripts/sync-docker.sh >> /var/log/bgp-api-docker-sync.log 2>&1
+```
+
+Keep the `bgp_api_postgres` volume when stopping the stack. Deleting that
+volume requires another bootstrap from the pre-indexed image.
+
 ## Cloudflare
 
 Enable the orange-cloud proxy for `bgp-api.mehrnet.com`. Configure a WAF rate

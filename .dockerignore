@@ -1,0 +1,15 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!cmd/bgp-api/
+!cmd/bgp-api/**
+!internal/
+!internal/**
+!docker/
+!docker/api/
+!docker/api/Dockerfile
+!docker/sync/
+!docker/sync/Dockerfile
+!scripts/
+!scripts/sync-postgres.sh

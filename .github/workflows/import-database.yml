@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: bgp-database-build
@@ -145,10 +146,12 @@ jobs:
         run: |
           data_tag="$(date -u +'%Y.%m.%d-%H%M')"
           schema_tag="$(date -u +'%Y%m%d_%H%M')"
-          echo "DATA_TAG=$data_tag" >> "$GITHUB_ENV"
-          echo "POSTGRES_SCHEMA=bgp_$schema_tag" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=db-${data_tag}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
-          echo "DATASET_BUILT_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+          {
+            echo "DATA_TAG=$data_tag"
+            echo "POSTGRES_SCHEMA=bgp_$schema_tag"
+            echo "RELEASE_TAG=db-${data_tag}-${GITHUB_RUN_NUMBER}"
+            echo "DATASET_BUILT_AT=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          } >> "$GITHUB_ENV"
       - name: Build PostgreSQL incremental patch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -210,6 +213,67 @@ jobs:
             rm "release/bin/$binary"
           done
           rmdir release/bin
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and publish API container
+        id: api_image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/bgp-api:${{ env.RELEASE_TAG }}-amd64
+          build-args: |
+            RELEASE_TAG=${{ env.RELEASE_TAG }}
+            SOURCE_COMMIT=${{ github.sha }}
+            BUILT_AT=${{ env.DATASET_BUILT_AT }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Build and publish sync container
+        id: sync_image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/sync/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/bgp-api-sync:${{ env.RELEASE_TAG }}-amd64
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Prepare PostgreSQL snapshot image context
+        run: |
+          mkdir -p docker-build/postgres
+          cp docker/postgres/Dockerfile docker/postgres/bootstrap.sql docker/postgres/build-snapshot.sh docker-build/postgres/
+          cp release/mehrnet_bgp_postgres.sql.gz docker-build/postgres/
+      - name: Build and publish pre-indexed PostgreSQL container
+        id: postgres_image
+        uses: docker/build-push-action@v6
+        with:
+          context: docker-build/postgres
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/bgp-api-postgres:${{ env.RELEASE_TAG }}-amd64
+          build-args: |
+            POSTGRES_SCHEMA=${{ env.POSTGRES_SCHEMA }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Write Docker deployment manifest
+        run: |
+          jq -n \
+            --arg release "$RELEASE_TAG" \
+            --arg api "ghcr.io/${GITHUB_REPOSITORY}@${{ steps.api_image.outputs.digest }}" \
+            --arg postgres "ghcr.io/${GITHUB_REPOSITORY_OWNER}/bgp-api-postgres@${{ steps.postgres_image.outputs.digest }}" \
+            --arg sync "ghcr.io/${GITHUB_REPOSITORY_OWNER}/bgp-api-sync@${{ steps.sync_image.outputs.digest }}" \
+            '{release: $release, images: {api: $api, postgres: $postgres, sync: $sync}}' \
+            > release/docker-deployment-manifest.json
       - name: Package database artifacts
         run: |
           tar -czf release/mehrnet_bgp_indexed.tar.gz mehrnet_bgp.db
@@ -227,7 +291,7 @@ jobs:
             [ -e "$patch" ] || continue
             split_asset "$patch"
           done
-          (cd release && sha256sum * > SHA256SUMS.txt)
+          (cd release && sha256sum ./* > SHA256SUMS.txt)
       - name: Publish database release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -241,6 +305,8 @@ jobs:
           - mehrnet_bgp_postgres.patch.<base-release>.sql.gz: logical PostgreSQL
             update patch from the named prior release.
           - postgres-patch-manifest.json: base/target contract for the logical patch.
+          - docker-deployment-manifest.json: digest-pinned amd64 API, sync, and
+            pre-indexed PostgreSQL images for Docker Compose deployment.
           - bgp-api-linux-amd64.tar.gz: static Linux amd64 API server binary.
           - bgp-api-linux-arm64.tar.gz: static Linux arm64 API server binary.
           - SHA256SUMS.txt: SHA-256 checksums for all assets.

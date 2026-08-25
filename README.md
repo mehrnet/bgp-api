@@ -57,12 +57,11 @@ go build -o bin/bgp-api ./cmd/bgp-api
 
 ## PostgreSQL Dataset Sync
 
-The producer publishes `mehrnet_bgp_postgres.sql.gz`, a compressed PostgreSQL
-`COPY` snapshot, alongside static Linux API binaries built from the same source
-commit. The dump includes `lookup_prefixes` for low-latency point lookups plus
-normalized `allocation_objects`, `route_objects`, and `autnums` tables for
-range, CIDR, and ASN resources, plus generated `range_summaries` for broad
-IPv4 range resources.
+The producer builds one PostgreSQL dataset directly from parsed RIR and geofeed
+inputs. It publishes an unindexed phase dump, creates indexes in that same
+database, then publishes the indexed dump used by the API and Docker image.
+Both phases contain `lookup_prefixes`, normalized allocation/route/aut-num
+tables, and generated `range_summaries`.
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
@@ -188,13 +187,13 @@ systemctl status bgp-api
 GitHub Actions runs daily at 04:00 UTC and supports manual dispatch. It only
 builds and publishes release assets. Each release contains:
 
-- `mehrnet_bgp.tar.gz`: normal SQLite database.
-- `mehrnet_bgp_indexed.tar.gz`: SQLite database with lookup indexes.
-- `mehrnet_bgp_postgres.sql.gz`: PostgreSQL snapshot for the next versioned schema.
+- `mehrnet_bgp_postgres_unindexed.sql.gz`: PostgreSQL phase dump before
+  lookup indexes are created.
+- `mehrnet_bgp_postgres.sql.gz`: indexed PostgreSQL snapshot used by full sync
+  and the pre-indexed Docker image.
 - `mehrnet_bgp_postgres.patch.<base-release>.sql.gz`: logical PostgreSQL delta
-  from the named indexed-dataset release. It is a `psql` script containing
-  `COPY` staging data and set-based deletions/inserts, so it updates existing
-  PostgreSQL indexes instead of rebuilding them.
+  from the named PostgreSQL release. It is a `psql` script containing `COPY`
+  staging data and set-based deletions/inserts, so it updates existing indexes.
 - `postgres-patch-manifest.json`: patch format and exact base/target release
   contract. A patch may only be applied when the local active release matches
   `base_release` exactly.
@@ -204,9 +203,8 @@ builds and publishes release assets. Each release contains:
 
 Assets over GitHub's release limit are split into numbered `.part-*` files.
 Download every part and concatenate them in order before extracting or
-decompressing the asset. The current synchronizer still uses the full snapshot;
-patch application is deliberately introduced separately after the patch assets
-have been validated in a release.
+decompressing the asset. The synchronizer applies patches sequentially when
+available and uses the indexed full snapshot only for bootstrap or recovery.
 
 Run the Go test suite with:
 

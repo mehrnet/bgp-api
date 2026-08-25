@@ -1,0 +1,11 @@
+FROM postgres:15.13-bookworm@sha256:d1f651d3a24650cd68a4e7fcf4eef7bd772c2ec965c3563f36b91c1fecddac76
+
+ENV PGDATA=/var/lib/postgresql/mehrnet-data
+
+COPY --chown=postgres:postgres pgdata /var/lib/postgresql/mehrnet-data
+
+# The API connects over Docker's private network rather than through localhost.
+USER root
+RUN printf "\nlisten_addresses = '*'\n" >> "$PGDATA/postgresql.conf"
+
+USER postgres

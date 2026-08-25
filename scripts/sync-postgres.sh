@@ -256,7 +256,7 @@ COMMIT;
 SQL
 
 if [[ "$active_schema" =~ ^bgp_[0-9]{8}_[0-9]{4}$ ]] && [ "$active_schema" != "$new_schema" ]; then
-  psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet --command "DROP SCHEMA \"$active_schema\" CASCADE;" >/dev/null
+	psql "$DATABASE_URL" --set ON_ERROR_STOP=1 --quiet --command "DROP SCHEMA IF EXISTS \"$active_schema\" CASCADE;" >/dev/null
 fi
 
 sync_binary "$latest_tag"

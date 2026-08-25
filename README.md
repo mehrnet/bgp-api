@@ -113,8 +113,11 @@ sudo systemctl enable --now bgp-api-postgres-sync.timer
 
 Docker is the fast bootstrap route. Each release publishes digest-pinned amd64
 API, updater, and pre-indexed PostgreSQL images in
-`docker-deployment-manifest.json`. The database image seeds the named volume on
-the first `docker compose up`; PostgreSQL starts with its indexes already built.
+`docker-deployment-manifest.json`. PostgreSQL starts directly from the
+pre-indexed data directory in its pinned image, so bootstrap does not need a
+second full-database volume copy. This route is suitable for small disks, but
+the PostgreSQL container must not be removed: its writable layer holds logical
+patches applied after the image's initial release.
 It is intentionally an amd64 image because PostgreSQL data directories are
 architecture-specific. The Dockerfiles also pin their Debian/Go/PostgreSQL base
 image digests, so rebuilds are reproducible. The host still supplies the Linux
@@ -137,9 +140,8 @@ untrusted containers to it or publish the PostgreSQL service.
 
 Run the Docker synchronizer after a producer release. It verifies the release
 manifest and checksums, applies the same sequential logical patch chain to the
-existing named volume, then recreates only the API container using the new
-digest-pinned image. It never replaces the PostgreSQL volume during a normal
-update.
+existing PostgreSQL container, then recreates only the API container using the
+new digest-pinned image. It never recreates PostgreSQL during a normal update.
 
 ```sh
 ./scripts/sync-docker.sh
@@ -151,8 +153,11 @@ For a daily host cron job at 05:00 UTC:
 0 5 * * * cd /srv/bgp-api && ./scripts/sync-docker.sh >> /var/log/bgp-api-docker-sync.log 2>&1
 ```
 
-Keep the `bgp_api_postgres` volume when stopping the stack. Deleting that
-volume requires another bootstrap from the pre-indexed image.
+Use `docker compose stop` or `docker compose restart` for this stack. Do not
+run `docker compose down`, `docker compose rm postgres`, or force-recreate the
+PostgreSQL service: those discard patches and require another bootstrap from
+the pre-indexed image. Use the bare-metal deployment when a separately managed
+PostgreSQL data directory is required.
 
 ## Cloudflare
 

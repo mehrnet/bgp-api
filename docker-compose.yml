@@ -4,8 +4,6 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: bgp_api
-    volumes:
-      - bgp_api_postgres:/var/lib/postgresql/mehrnet-data
     networks:
       - private
     healthcheck:
@@ -46,9 +44,6 @@ services:
     networks:
       - private
       - egress
-
-volumes:
-  bgp_api_postgres:
 
 networks:
   private:

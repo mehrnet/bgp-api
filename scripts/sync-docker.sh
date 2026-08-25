@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update a pinned Compose deployment without replacing its PostgreSQL volume.
+# Update a pinned Compose deployment without recreating its PostgreSQL container.
 set -euo pipefail
 
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
@@ -46,7 +46,7 @@ download_asset() {
 verify_asset() {
   local name="$1"
   local expected
-  expected="$(awk -v name="$name" '$2 == name { print; exit }' "$WORK_DIR/SHA256SUMS.txt")"
+  expected="$(awk -v name="$name" '$2 == name || $2 == "./" name { print; exit }' "$WORK_DIR/SHA256SUMS.txt")"
   [ -n "$expected" ] || die "SHA256SUMS.txt has no entry for $name"
   (cd "$WORK_DIR" && printf '%s\n' "$expected" | sha256sum -c - >&2)
 }

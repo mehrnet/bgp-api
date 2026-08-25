@@ -271,7 +271,7 @@ jobs:
           script: |
             const packages = ["bgp-api", "bgp-api-postgres", "bgp-api-sync"];
             for (const packageName of packages) {
-              await github.rest.packages.updatePackageForOrg({
+              await github.request("PATCH /orgs/{org}/packages/{package_type}/{package_name}", {
                 org: context.repo.owner,
                 package_type: "container",
                 package_name: packageName,

@@ -155,34 +155,17 @@ jobs:
           ANALYZE;
           SQL
           go run ./cmd/validate-database mehrnet_bgp.db
-      - name: Upload normal SQLite hand-off
-        uses: actions/upload-artifact@v4
-        with:
-          name: handoff-normal-sqlite
-          path: mehrnet_bgp.db
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
-
-  package-normal:
-    name: Package normal database
-    needs: prepare-sqlite
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: handoff-normal-sqlite
-          path: work
-      - name: Create normal database release asset
+      - name: Package normal database release asset
         run: |
           mkdir release
-          tar -C work -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
+          tar -czf release/mehrnet_bgp.tar.gz mehrnet_bgp.db
           if [ "$(stat --format=%s release/mehrnet_bgp.tar.gz)" -ge 2040000000 ]; then
             split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 \
               release/mehrnet_bgp.tar.gz release/mehrnet_bgp.tar.gz.part-
             rm release/mehrnet_bgp.tar.gz
           fi
-      - uses: actions/upload-artifact@v4
+      - name: Upload normal database release asset
+        uses: actions/upload-artifact@v4
         with:
           name: release-normal-database
           path: release/
@@ -201,8 +184,24 @@ jobs:
           go-version: "1.22"
       - uses: actions/download-artifact@v4
         with:
-          name: handoff-normal-sqlite
-          path: work
+          name: release-normal-database
+          path: input
+      - name: Extract normal database release asset
+        run: |
+          if [ -f input/mehrnet_bgp.tar.gz ]; then
+            normal_archive=input/mehrnet_bgp.tar.gz
+          else
+            mapfile -t parts < <(find input -maxdepth 1 -type f -name 'mehrnet_bgp.tar.gz.part-*' | sort)
+            [ "${#parts[@]}" -gt 0 ] || {
+              echo "Normal database release artifact is missing." >&2
+              exit 1
+            }
+            normal_archive=input/mehrnet_bgp.tar.gz
+            cat "${parts[@]}" > "$normal_archive"
+          fi
+          mkdir work
+          tar -xzf "$normal_archive" -C work
+          test -s work/mehrnet_bgp.db
       - name: Build and validate range indexes
         run: |
           go run ./cmd/build-prefix-index work/mehrnet_bgp.db
@@ -267,7 +266,7 @@ jobs:
 
   build-postgres-patch:
     name: Build PostgreSQL incremental patch
-    needs: [release-metadata, build-indexed]
+    needs: [release-metadata, package-indexed]
     runs-on: ubuntu-latest
     outputs:
       patch_available: ${{ steps.patch.outputs.patch_available }}
@@ -278,8 +277,8 @@ jobs:
           go-version: "1.22"
       - uses: actions/download-artifact@v4
         with:
-          name: handoff-indexed-sqlite
-          path: work
+          name: release-indexed-database
+          path: target
       - id: patch
         name: Build logical patch
         env:
@@ -295,6 +294,20 @@ jobs:
 
           previous_dir="$(mktemp -d)"
           trap 'rm -rf "$previous_dir"' EXIT
+          if [ -f target/mehrnet_bgp_indexed.tar.gz ]; then
+            target_archive=target/mehrnet_bgp_indexed.tar.gz
+          else
+            mapfile -t target_parts < <(find target -maxdepth 1 -type f -name 'mehrnet_bgp_indexed.tar.gz.part-*' | sort)
+            [ "${#target_parts[@]}" -gt 0 ] || {
+              echo "Current indexed database release artifact is missing." >&2
+              exit 1
+            }
+            target_archive=target/mehrnet_bgp_indexed.tar.gz
+            cat "${target_parts[@]}" > "$target_archive"
+          fi
+          tar -xzf "$target_archive" -C target
+          test -s target/mehrnet_bgp.db
+
           gh release download "$previous_tag" \
             --pattern 'mehrnet_bgp_indexed.tar.gz*' \
             --dir "$previous_dir"
@@ -317,7 +330,7 @@ jobs:
           patch_asset="release/mehrnet_bgp_postgres.patch.${previous_tag}.sql.gz"
           go run ./cmd/build-postgres-patch \
             -base "$previous_dir/mehrnet_bgp.db" \
-            -target work/mehrnet_bgp.db \
+            -target target/mehrnet_bgp.db \
             -output "$patch_asset" \
             -base-release "$previous_tag" \
             -target-release "$RELEASE_TAG"
@@ -469,7 +482,6 @@ jobs:
     name: Publish database release
     needs:
       - release-metadata
-      - package-normal
       - package-indexed
       - build-postgres-patch
       - build-postgres-snapshot

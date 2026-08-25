@@ -265,6 +265,19 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Keep GHCR deployment images public
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const packages = ["bgp-api", "bgp-api-postgres", "bgp-api-sync"];
+            for (const packageName of packages) {
+              await github.rest.packages.updatePackageForOrg({
+                org: context.repo.owner,
+                package_type: "container",
+                package_name: packageName,
+                visibility: "public",
+              });
+            }
       - name: Write Docker deployment manifest
         run: |
           jq -n \

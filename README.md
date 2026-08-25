@@ -116,7 +116,9 @@ API, updater, and pre-indexed PostgreSQL images in
 `docker-deployment-manifest.json`. The database image seeds the named volume on
 the first `docker compose up`; PostgreSQL starts with its indexes already built.
 It is intentionally an amd64 image because PostgreSQL data directories are
-architecture-specific.
+architecture-specific. The Dockerfiles also pin their Debian/Go/PostgreSQL base
+image digests, so rebuilds are reproducible. The host still supplies the Linux
+kernel and does not need a matching distribution release.
 
 Copy the Compose files and create a private environment file from the example.
 Set the three image values from the release deployment manifest and set a unique

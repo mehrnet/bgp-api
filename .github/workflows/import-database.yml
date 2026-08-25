@@ -208,7 +208,14 @@ jobs:
               docker kill bgp-postgres-build || true
             fi
           }
-          test -s build/pgdata/PG_VERSION
+          if [ ! -s build/pgdata/PG_VERSION ]; then
+            echo "PostgreSQL bind mount did not expose PG_VERSION; recovering the stopped data directory" >&2
+            docker cp bgp-postgres-build:/var/lib/postgresql/mehrnet-data/. build/pgdata/
+          fi
+          test -s build/pgdata/PG_VERSION || {
+            find build/pgdata -maxdepth 2 -type f -printf '%p %s bytes\n' | head -40 >&2
+            exit 1
+          }
           cp docker/postgres/Dockerfile.direct build/Dockerfile
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3

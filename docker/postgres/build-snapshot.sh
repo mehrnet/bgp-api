@@ -4,6 +4,7 @@ set -euo pipefail
 : "${POSTGRES_SCHEMA:?POSTGRES_SCHEMA is required}"
 
 initdb --pgdata="$PGDATA" --auth-local=trust --auth-host=trust
+printf '%s\n' 'host all all 0.0.0.0/0 trust' 'host all all ::0/0 trust' >> "$PGDATA/pg_hba.conf"
 pg_ctl -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start
 psql --username postgres --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
 CREATE ROLE bgp_api LOGIN;

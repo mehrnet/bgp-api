@@ -187,10 +187,11 @@ systemctl status bgp-api
 GitHub Actions runs daily at 04:00 UTC and supports manual dispatch. It only
 builds and publishes release assets. Each release contains:
 
-- `mehrnet_bgp_postgres_unindexed.sql.gz`: PostgreSQL phase dump before
-  lookup indexes are created.
-- `mehrnet_bgp_postgres.sql.gz`: indexed PostgreSQL snapshot used by full sync
-  and the pre-indexed Docker image.
+- `mehrnet_bgp_postgres.sql.gz`: self-contained PostgreSQL logical snapshot.
+  A normal `psql` restore loads the data and creates every lookup index. Patch
+  generation sets `skip_indexes=1` to restore only schema and data.
+- `mehrnet_bgp_postgres_indexes.sql`: the small, standalone index phase used by
+  the logical snapshot and available for manual schema/data-only restores.
 - `mehrnet_bgp_postgres.patch.<base-release>.sql.gz`: logical PostgreSQL delta
   from the named PostgreSQL release. It is a `psql` script containing `COPY`
   staging data and set-based deletions/inserts, so it updates existing indexes.
@@ -204,7 +205,9 @@ builds and publishes release assets. Each release contains:
 Assets over GitHub's release limit are split into numbered `.part-*` files.
 Download every part and concatenate them in order before extracting or
 decompressing the asset. The synchronizer applies patches sequentially when
-available and uses the indexed full snapshot only for bootstrap or recovery.
+available and uses the self-contained logical snapshot only for bootstrap or
+recovery. The PostgreSQL Docker image carries the physical pre-indexed database
+and does not rebuild indexes during startup.
 
 Run the Go test suite with:
 

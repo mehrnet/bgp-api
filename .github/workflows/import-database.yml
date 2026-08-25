@@ -9,6 +9,9 @@ permissions:
   contents: write
   packages: write
 
+env:
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
 concurrency:
   group: bgp-database-build
   cancel-in-progress: false
@@ -87,11 +90,17 @@ jobs:
             allocations_${{ matrix.rir }}.csv
             routes_${{ matrix.rir }}.csv
             autnums_${{ matrix.rir }}.csv
-            geofeeds_${{ matrix.rir }}.txt
+          retention-days: 1
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geofeeds-${{ matrix.rir }}
+          path: geofeeds_${{ matrix.rir }}.txt
+          retention-days: 1
           if-no-files-found: error
 
-  prepare-input:
-    name: Prepare PostgreSQL producer input
+  prepare-geofeeds:
+    name: Prepare geofeed locations
     needs: parse-rir
     runs-on: ubuntu-latest
     steps:
@@ -101,30 +110,27 @@ jobs:
           go-version: "1.22"
       - uses: actions/download-artifact@v4
         with:
-          pattern: data-*
+          pattern: geofeeds-*
           path: artifacts
           merge-multiple: true
-      - name: Merge parser output
+      - name: Merge geofeed sources
         run: |
           mkdir final_data
-          cat artifacts/allocations_*.csv > final_data/allocations.csv
-          cat artifacts/routes_*.csv > final_data/routes.csv
-          cat artifacts/autnums_*.csv > final_data/autnums.csv
           touch artifacts/geofeeds_dummy.txt
           cat artifacts/geofeeds_*.txt | sort -u > final_data/geofeeds.txt
       - name: Fetch geofeeds
         run: go run ./cmd/fetch-geofeeds
       - uses: actions/upload-artifact@v4
         with:
-          name: postgres-producer-input
-          path: final_data/
-          compression-level: 0
+          name: geofeed-locations
+          path: final_data/geolocations.csv
+          compression-level: 1
           retention-days: 1
           if-no-files-found: error
 
   build-postgres:
     name: Build PostgreSQL phases and image
-    needs: [release-metadata, prepare-input]
+    needs: [release-metadata, parse-rir, prepare-geofeeds]
     runs-on: ubuntu-latest
     outputs:
       postgres_image: ${{ format('ghcr.io/{0}/bgp-api-postgres@{1}', github.repository_owner, steps.postgres_image.outputs.digest) }}
@@ -135,8 +141,19 @@ jobs:
           go-version: "1.22"
       - uses: actions/download-artifact@v4
         with:
-          name: postgres-producer-input
+          pattern: data-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: geofeed-locations
           path: final_data
+      - name: Merge parser output
+        run: |
+          cat artifacts/allocations_*.csv > final_data/allocations.csv
+          cat artifacts/routes_*.csv > final_data/routes.csv
+          cat artifacts/autnums_*.csv > final_data/autnums.csv
+          test -s final_data/geolocations.csv
       - name: Start disposable PostgreSQL builder
         run: |
           mkdir -p build/pgdata
@@ -154,7 +171,7 @@ jobs:
             -c archive_mode=off \
             -c autovacuum=off \
             -c checkpoint_timeout=30min \
-            -c max_wal_size=4GB \
+            -c max_wal_size=1GB \
             -c min_wal_size=80MB
           ready=false
           for _ in $(seq 1 60); do
@@ -183,6 +200,10 @@ jobs:
           POSTGRES_SCHEMA: ${{ needs.release-metadata.outputs.postgres_schema }}
         run: |
           mkdir -p release
+          compressor=(gzip -1)
+          if command -v pigz >/dev/null 2>&1; then
+            compressor=(pigz -1 -p "$(nproc)")
+          fi
           go run ./cmd/build-postgres-indexes \
             -schema "$POSTGRES_SCHEMA" \
             -output release/mehrnet_bgp_postgres_indexes.sql
@@ -191,7 +212,7 @@ jobs:
               -U postgres -d bgp_api --format=plain --no-owner --no-privileges \
               --schema="$POSTGRES_SCHEMA"
             cat release/mehrnet_bgp_postgres_indexes.sql
-          } | gzip -1 > release/mehrnet_bgp_postgres.sql.gz
+          } | "${compressor[@]}" > release/mehrnet_bgp_postgres.sql.gz
       - name: Build PostgreSQL indexes in place
         env:
           DATABASE_URL: postgres://postgres:build-only@127.0.0.1:55432/bgp_api?sslmode=disable
@@ -215,6 +236,7 @@ jobs:
         run: |
           docker exec bgp-postgres-build psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -c "CHECKPOINT;"
+          docker exec bgp-postgres-build sh -c 'du -sh "$PGDATA"; du -sh "$PGDATA/pg_wal"'
           docker exec --user root bgp-postgres-build chmod -R a+rX /var/lib/postgresql/mehrnet-data
           docker stop --time 120 bgp-postgres-build || {
             state="$(docker inspect --format '{{.State.Status}}' bgp-postgres-build 2>/dev/null || true)"
@@ -244,8 +266,7 @@ jobs:
           context: build
           file: build/Dockerfile
           platforms: linux/amd64
-          push: true
-          tags: ghcr.io/${{ github.repository_owner }}/bgp-api-postgres:${{ needs.release-metadata.outputs.release_tag }}-amd64
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/bgp-api-postgres:${{ needs.release-metadata.outputs.release_tag }}-amd64,push=true,oci-mediatypes=true,compression=zstd,compression-level=1,force-compression=true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -260,7 +281,7 @@ jobs:
 
   build-postgres-patch:
     name: Build PostgreSQL logical patch
-    needs: [release-metadata, prepare-input]
+    needs: [release-metadata, parse-rir, prepare-geofeeds]
     runs-on: ubuntu-latest
     outputs:
       patch_available: ${{ steps.patch.outputs.patch_available }}
@@ -271,8 +292,19 @@ jobs:
           go-version: "1.22"
       - uses: actions/download-artifact@v4
         with:
-          name: postgres-producer-input
+          pattern: data-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: geofeed-locations
           path: final_data
+      - name: Merge parser output
+        run: |
+          cat artifacts/allocations_*.csv > final_data/allocations.csv
+          cat artifacts/routes_*.csv > final_data/routes.csv
+          cat artifacts/autnums_*.csv > final_data/autnums.csv
+          test -s final_data/geolocations.csv
       - id: patch
         env:
           GH_TOKEN: ${{ github.token }}

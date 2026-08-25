@@ -91,7 +91,7 @@ func buildIndexes(ctx context.Context, databaseURL string, definitions []indexDe
 				return
 			}
 			defer conn.Close(context.Background())
-			if _, err := conn.Exec(ctx, "SET synchronous_commit = off; SET maintenance_work_mem = '768MB'"); err != nil {
+			if _, err := conn.Exec(ctx, "SET synchronous_commit = off; SET maintenance_work_mem = '2GB'"); err != nil {
 				recordError(fmt.Errorf("index worker %d configure: %w", worker, err))
 				return
 			}

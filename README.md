@@ -8,7 +8,98 @@ application or store the database.
 The public static frontend for `https://bgp.mehrnet.com` is maintained in
 [`mehrnet/bgp`](https://github.com/mehrnet/bgp).
 
-## Run the API
+## Quick Install
+
+The unattended installer deploys the latest digest-pinned API, updater, and
+pre-indexed PostgreSQL images. It installs Docker when needed, verifies the
+release deployment manifest, and waits for the API to become healthy.
+
+The Docker deployment currently requires:
+
+- a Linux amd64 server
+- root access
+- at least 12 GiB of free space in Docker's storage filesystem
+- ports 80 and 443 when using the automatic Caddy setup
+
+### Localhost only
+
+This leaves the service accessible only at `127.0.0.1:3102` and does not
+require an origin-authentication header:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash
+```
+
+Check it immediately:
+
+```sh
+curl http://127.0.0.1:3102/v1/health
+curl 'http://127.0.0.1:3102/v1/ip?query=1.1.1.1'
+```
+
+### Domain and HTTPS
+
+Point the domain's DNS record to the server first. The domain variant installs
+Caddy, obtains TLS certificates, keeps the API bound to localhost, and creates
+a private origin token shared by Caddy and the API:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --domain bgp-api.example.com
+```
+
+Add `--auto-update` to either installation command to install the daily update
+job at exactly 06:00 UTC:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --auto-update
+```
+
+Or combine the domain and automatic-update setup:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --domain bgp-api.example.com --auto-update
+```
+
+The Caddy setup supports direct traffic and Cloudflare-proxied DNS. Keep TCP
+ports 80 and 443 reachable so Caddy can provision and renew certificates.
+
+### Update
+
+Run an update at any time with:
+
+```sh
+sudo /srv/bgp-api/install.sh --update
+```
+
+Normal updates verify the new release, apply every sequential PostgreSQL patch,
+and replace only the API and updater images. They do not recreate the active
+PostgreSQL container or download another full database image.
+
+For manual scheduling, open root's crontab with `sudo crontab -e` and add these
+lines:
+
+```cron
+CRON_TZ=UTC
+0 6 * * * /srv/bgp-api/install.sh --update >> /var/log/mehrnet-bgp-api-update.log 2>&1
+```
+
+The `--auto-update` option writes the equivalent schedule to
+`/etc/cron.d/mehrnet-bgp-api-update` and enables the host's cron service.
+
+Useful operational commands:
+
+```sh
+cd /srv/bgp-api
+sudo docker compose --env-file .env -f docker-compose.yml ps
+sudo docker compose --env-file .env -f docker-compose.yml logs -f api
+sudo docker compose --env-file .env -f docker-compose.yml restart api
+```
+
+Do not use `docker compose down` or remove the PostgreSQL container. Its
+writable layer contains the patches applied after the original pre-indexed
+image was published.
+
+## Run From Source
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
@@ -49,19 +140,19 @@ Every API response is derived exclusively from the locally imported daily
 dataset. The API makes no runtime requests to RIRs, RDAP, RIPEstat, or any
 other upstream service.
 
-For production, build one static binary locally:
+To build one static binary locally:
 
 ```sh
 go build -o bin/bgp-api ./cmd/bgp-api
 ```
 
-## PostgreSQL Dataset Sync
+## Bare-Metal PostgreSQL Sync
 
 The producer builds one PostgreSQL dataset directly from parsed RIR and geofeed
-inputs. It publishes an unindexed phase dump, creates indexes in that same
-database, then publishes the indexed dump used by the API and Docker image.
-Both phases contain `lookup_prefixes`, normalized allocation/route/aut-num
-tables, and generated `range_summaries`.
+inputs. It writes a logical snapshot with a separately executable index phase,
+then builds those indexes in the same physical database used by the Docker
+image. The dataset contains `lookup_prefixes`, normalized
+allocation/route/aut-num tables, and generated `range_summaries`.
 
 ```sh
 export DATABASE_URL='postgres://bgp_api:change-me@127.0.0.1:5432/bgp_api'
@@ -146,10 +237,11 @@ new digest-pinned image. It never recreates PostgreSQL during a normal update.
 ./scripts/sync-docker.sh
 ```
 
-For a daily host cron job at 05:00 UTC:
+For a daily host cron job at 06:00 UTC:
 
-```sh
-0 5 * * * cd /srv/bgp-api && ./scripts/sync-docker.sh >> /var/log/bgp-api-docker-sync.log 2>&1
+```cron
+CRON_TZ=UTC
+0 6 * * * cd /srv/bgp-api && ./scripts/sync-docker.sh >> /var/log/bgp-api-docker-sync.log 2>&1
 ```
 
 Use `docker compose stop` or `docker compose restart` for this stack. Do not

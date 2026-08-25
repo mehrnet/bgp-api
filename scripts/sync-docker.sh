@@ -6,7 +6,8 @@ readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
 readonly DEPLOY_DIR="${BGP_API_DOCKER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 readonly ENV_FILE="${BGP_API_DOCKER_ENV_FILE:-$DEPLOY_DIR/.env}"
 readonly COMPOSE_FILE="$DEPLOY_DIR/docker-compose.yml"
-readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-docker.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-docker.XXXXXX")"
+readonly WORK_DIR
 
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -52,7 +53,10 @@ verify_asset() {
 }
 
 valid_image() {
-  [[ "$1" =~ ^ghcr\.io/mehrnet/bgp-api(-postgres|-sync)?@sha256:[0-9a-f]{64}$ ]]
+  local image="$1" repository="$2" digest
+  [[ "$image" == "$repository@sha256:"* ]] || return 1
+  digest="${image#"$repository@sha256:"}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
 }
 
 [ -f "$COMPOSE_FILE" ] || die "missing $COMPOSE_FILE"
@@ -71,9 +75,14 @@ manifest="$WORK_DIR/docker-deployment-manifest.json"
 api_image="$(jq -r '.images.api // empty' "$manifest")"
 postgres_image="$(jq -r '.images.postgres // empty' "$manifest")"
 sync_image="$(jq -r '.images.sync // empty' "$manifest")"
-valid_image "$api_image" || die "deployment manifest has an invalid API image"
-valid_image "$postgres_image" || die "deployment manifest has an invalid PostgreSQL image"
-valid_image "$sync_image" || die "deployment manifest has an invalid sync image"
+repository_owner="${REPOSITORY%%/*}"
+legacy_api_prefix="ghcr.io/$REPOSITORY/bgp-api@sha256:"
+if [[ "$api_image" == "$legacy_api_prefix"* ]]; then
+  api_image="ghcr.io/$repository_owner/bgp-api@sha256:${api_image#"$legacy_api_prefix"}"
+fi
+valid_image "$api_image" "ghcr.io/$repository_owner/bgp-api" || die "deployment manifest has an invalid API image"
+valid_image "$postgres_image" "ghcr.io/$repository_owner/bgp-api-postgres" || die "deployment manifest has an invalid PostgreSQL image"
+valid_image "$sync_image" "ghcr.io/$repository_owner/bgp-api-sync" || die "deployment manifest has an invalid sync image"
 
 runtime_env="$WORK_DIR/.env"
 awk '!/^(BGP_API_IMAGE|BGP_API_POSTGRES_IMAGE|BGP_API_SYNC_IMAGE)=/' "$ENV_FILE" > "$runtime_env"

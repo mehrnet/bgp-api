@@ -434,7 +434,7 @@ jobs:
     needs: release-metadata
     runs-on: ubuntu-latest
     outputs:
-      api_image: ${{ format('ghcr.io/{0}/bgp-api@{1}', github.repository, steps.api_image.outputs.digest) }}
+      api_image: ${{ format('ghcr.io/{0}/bgp-api@{1}', github.repository_owner, steps.api_image.outputs.digest) }}
       api_amd64_sha: ${{ steps.api_assets.outputs.api_amd64_sha }}
       api_arm64_sha: ${{ steps.api_assets.outputs.api_arm64_sha }}
     steps:

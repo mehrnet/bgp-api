@@ -192,7 +192,7 @@ jobs:
 
   build-indexed:
     name: Build indexed SQLite database
-    needs: prepare-sqlite
+    needs: [release-metadata, prepare-sqlite]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -208,6 +208,28 @@ jobs:
           go run ./cmd/build-prefix-index work/mehrnet_bgp.db
           go run ./cmd/build-range-summaries work/mehrnet_bgp.db
           go run ./cmd/validate-database -indexed work/mehrnet_bgp.db
+      - name: Export PostgreSQL COPY dump
+        env:
+          POSTGRES_SCHEMA: ${{ needs.release-metadata.outputs.postgres_schema }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          DATASET_BUILT_AT: ${{ needs.release-metadata.outputs.dataset_built_at }}
+        run: |
+          mkdir release
+          go run ./cmd/export-postgres \
+            -database work/mehrnet_bgp.db \
+            -output release/mehrnet_bgp_postgres.sql.gz \
+            -schema "$POSTGRES_SCHEMA" \
+            -release-tag "$RELEASE_TAG" \
+            -built-at "$DATASET_BUILT_AT" \
+            -source-commit "$GITHUB_SHA"
+      - name: Upload PostgreSQL dump hand-off
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff-postgres-dump
+          path: release/mehrnet_bgp_postgres.sql.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
       - name: Upload indexed SQLite hand-off
         uses: actions/upload-artifact@v4
         with:
@@ -332,27 +354,10 @@ jobs:
       postgres_image: ${{ format('ghcr.io/{0}/bgp-api-postgres@{1}', github.repository_owner, steps.postgres_image.outputs.digest) }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
       - uses: actions/download-artifact@v4
         with:
-          name: handoff-indexed-sqlite
-          path: work
-      - name: Export PostgreSQL COPY dump
-        env:
-          POSTGRES_SCHEMA: ${{ needs.release-metadata.outputs.postgres_schema }}
-          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
-          DATASET_BUILT_AT: ${{ needs.release-metadata.outputs.dataset_built_at }}
-        run: |
-          mkdir release
-          go run ./cmd/export-postgres \
-            -database work/mehrnet_bgp.db \
-            -output release/mehrnet_bgp_postgres.sql.gz \
-            -schema "$POSTGRES_SCHEMA" \
-            -release-tag "$RELEASE_TAG" \
-            -built-at "$DATASET_BUILT_AT" \
-            -source-commit "$GITHUB_SHA"
+          name: handoff-postgres-dump
+          path: release
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -377,20 +382,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-      - name: Split PostgreSQL dump when required
-        run: |
-          if [ "$(stat --format=%s release/mehrnet_bgp_postgres.sql.gz)" -ge 2040000000 ]; then
-            split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 \
-              release/mehrnet_bgp_postgres.sql.gz release/mehrnet_bgp_postgres.sql.gz.part-
-            rm release/mehrnet_bgp_postgres.sql.gz
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-postgres-dump
-          path: release/
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
 
   build-api-image:
     name: Build API image and static binaries
@@ -486,11 +477,16 @@ jobs:
       - build-sync-image
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: release
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: handoff-postgres-dump
+          path: release
       - name: Write Docker deployment manifest
         env:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
@@ -517,7 +513,13 @@ jobs:
             docker manifest inspect "$image" >/dev/null
           done
       - name: Write checksums
-        run: (cd release && sha256sum ./* > SHA256SUMS.txt)
+        run: |
+          if [ "$(stat --format=%s release/mehrnet_bgp_postgres.sql.gz)" -ge 2040000000 ]; then
+            split --bytes=1900m --numeric-suffixes=1 --suffix-length=2 \
+              release/mehrnet_bgp_postgres.sql.gz release/mehrnet_bgp_postgres.sql.gz.part-
+            rm release/mehrnet_bgp_postgres.sql.gz
+          fi
+          (cd release && sha256sum ./* > SHA256SUMS.txt)
       - name: Publish database release
         env:
           GH_TOKEN: ${{ github.token }}

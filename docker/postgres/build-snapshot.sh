@@ -5,7 +5,9 @@ set -euo pipefail
 
 initdb --pgdata="$PGDATA" --auth-local=trust --auth-host=trust
 printf '%s\n' 'host all all 0.0.0.0/0 trust' 'host all all ::0/0 trust' >> "$PGDATA/pg_hba.conf"
-pg_ctl -D "$PGDATA" -o "-c listen_addresses=127.0.0.1" -w start
+# These settings apply only while creating this immutable snapshot. The final
+# image starts with PostgreSQL's normal durability settings.
+pg_ctl -D "$PGDATA" -o "-c listen_addresses=127.0.0.1 -c fsync=off -c synchronous_commit=off -c full_page_writes=off -c autovacuum=off -c checkpoint_timeout=30min -c max_wal_size=2GB -c maintenance_work_mem=1GB" -w start
 psql --username postgres --dbname postgres --set ON_ERROR_STOP=1 <<'SQL'
 CREATE ROLE bgp_api LOGIN;
 CREATE DATABASE bgp_api OWNER postgres;

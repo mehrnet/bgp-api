@@ -131,13 +131,22 @@ builds and publishes release assets. Each release contains:
 - `mehrnet_bgp.tar.gz`: normal SQLite database.
 - `mehrnet_bgp_indexed.tar.gz`: SQLite database with lookup indexes.
 - `mehrnet_bgp_postgres.sql.gz`: PostgreSQL snapshot for the next versioned schema.
+- `mehrnet_bgp_postgres.patch.<base-release>.sql.gz`: logical PostgreSQL delta
+  from the named indexed-dataset release. It is a `psql` script containing
+  `COPY` staging data and set-based deletions/inserts, so it updates existing
+  PostgreSQL indexes instead of rebuilding them.
+- `postgres-patch-manifest.json`: patch format and exact base/target release
+  contract. A patch may only be applied when the local active release matches
+  `base_release` exactly.
 - `bgp-api-linux-amd64.tar.gz`: static Linux amd64 API server binary.
 - `bgp-api-linux-arm64.tar.gz`: static Linux arm64 API server binary.
 - `SHA256SUMS.txt`: hashes for every release asset.
 
 Assets over GitHub's release limit are split into numbered `.part-*` files.
 Download every part and concatenate them in order before extracting or
-decompressing the asset.
+decompressing the asset. The current synchronizer still uses the full snapshot;
+patch application is deliberately introduced separately after the patch assets
+have been validated in a release.
 
 Run the Go test suite with:
 

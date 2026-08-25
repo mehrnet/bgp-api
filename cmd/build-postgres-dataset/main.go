@@ -325,6 +325,9 @@ func forEachCSV(path string, fn func([]string) error) error {
 		if err != nil {
 			return err
 		}
+		for index := range row {
+			row[index] = cleanText(row[index])
+		}
 		if err := fn(row); err != nil {
 			return err
 		}
@@ -332,7 +335,12 @@ func forEachCSV(path string, fn func([]string) error) error {
 }
 func quoteIdent(value string) string   { return `"` + strings.ReplaceAll(value, `"`, `""`) + `"` }
 func quoteLiteral(value string) string { return `'` + strings.ReplaceAll(value, `'`, `''`) + `'` }
+func cleanText(value string) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	return strings.ReplaceAll(value, "\x00", "")
+}
 func nullable(value string) any {
+	value = cleanText(value)
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}

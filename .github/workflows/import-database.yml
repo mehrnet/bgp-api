@@ -11,6 +11,7 @@ permissions:
 
 env:
   DOCKER_BUILD_RECORD_UPLOAD: "false"
+  GH_REPO: ${{ github.repository }}
 
 concurrency:
   group: bgp-database-build

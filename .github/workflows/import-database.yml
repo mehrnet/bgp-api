@@ -27,15 +27,23 @@ jobs:
       dataset_built_at: ${{ steps.metadata.outputs.dataset_built_at }}
     steps:
       - id: metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           data_tag="$(date -u +'%Y.%m.%d-%H%M')"
           schema_tag="$(date -u +'%Y%m%d_%H%M')"
+          release_tag="db-${data_tag}-${GITHUB_RUN_NUMBER}"
           {
             echo "data_tag=$data_tag"
             echo "postgres_schema=bgp_$schema_tag"
-            echo "release_tag=db-${data_tag}-${GITHUB_RUN_NUMBER}"
+            echo "release_tag=$release_tag"
             echo "dataset_built_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           } >> "$GITHUB_OUTPUT"
+          gh release create "$release_tag" \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "MehrNet BGP Database - ${data_tag} (building)" \
+            --notes "Database production is in progress. Assets are uploaded to this draft as each independent build completes."
 
   parse-rir:
     name: Parse ${{ matrix.rir }}
@@ -134,6 +142,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       postgres_image: ${{ format('ghcr.io/{0}/bgp-api-postgres@{1}', github.repository_owner, steps.postgres_image.outputs.digest) }}
+      postgres_dump_sha: ${{ steps.postgres_assets.outputs.postgres_dump_sha }}
+      postgres_indexes_sha: ${{ steps.postgres_assets.outputs.postgres_indexes_sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -213,15 +223,36 @@ jobs:
               --schema="$POSTGRES_SCHEMA"
             cat release/mehrnet_bgp_postgres_indexes.sql
           } | "${compressor[@]}" > release/mehrnet_bgp_postgres.sql.gz
-      - name: Build PostgreSQL indexes in place
+      - name: Build PostgreSQL indexes while uploading logical release assets
+        id: postgres_assets
         env:
+          GH_TOKEN: ${{ github.token }}
           DATABASE_URL: postgres://postgres:build-only@127.0.0.1:55432/bgp_api?sslmode=disable
           POSTGRES_SCHEMA: ${{ needs.release-metadata.outputs.postgres_schema }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
         run: |
+          {
+            echo "postgres_dump_sha=$(sha256sum release/mehrnet_bgp_postgres.sql.gz | cut -d ' ' -f 1)"
+            echo "postgres_indexes_sha=$(sha256sum release/mehrnet_bgp_postgres_indexes.sql | cut -d ' ' -f 1)"
+          } >> "$GITHUB_OUTPUT"
+
+          gh release upload "$RELEASE_TAG" \
+            release/mehrnet_bgp_postgres.sql.gz \
+            release/mehrnet_bgp_postgres_indexes.sql \
+            --clobber &
+          upload_pid=$!
+
+          index_status=0
           go run ./cmd/build-postgres-indexes \
             -database-url "$DATABASE_URL" \
             -schema "$POSTGRES_SCHEMA" \
-            -workers 2
+            -workers 2 || index_status=$?
+          upload_status=0
+          wait "$upload_pid" || upload_status=$?
+          if [ "$index_status" -ne 0 ] || [ "$upload_status" -ne 0 ]; then
+            echo "index_status=$index_status upload_status=$upload_status" >&2
+            exit 1
+          fi
       - name: Validate runtime database contract
         env:
           POSTGRES_SCHEMA: ${{ needs.release-metadata.outputs.postgres_schema }}
@@ -253,6 +284,11 @@ jobs:
             exit 1
           }
           cp docker/postgres/Dockerfile.direct build/Dockerfile
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: docker-container
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -263,21 +299,14 @@ jobs:
         id: postgres_image
         uses: docker/build-push-action@v6
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: build
           file: build/Dockerfile
           platforms: linux/amd64
-          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/bgp-api-postgres:${{ needs.release-metadata.outputs.release_tag }}-amd64,push=true,oci-mediatypes=true,compression=zstd,compression-level=1,force-compression=true
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/bgp-api-postgres:${{ needs.release-metadata.outputs.release_tag }}-amd64,push=true,oci-mediatypes=true,compression=zstd,compression-level=1
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-      - name: Upload PostgreSQL release assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-postgres-database
-          path: release/
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
 
   build-postgres-patch:
     name: Build PostgreSQL logical patch
@@ -285,6 +314,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       patch_available: ${{ steps.patch.outputs.patch_available }}
+      patch_asset: ${{ steps.patch.outputs.patch_asset }}
+      patch_sha: ${{ steps.patch.outputs.patch_sha }}
+      patch_manifest_sha: ${{ steps.patch.outputs.patch_manifest_sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -312,7 +344,7 @@ jobs:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           DATASET_BUILT_AT: ${{ needs.release-metadata.outputs.dataset_built_at }}
         run: |
-          previous_tag="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          previous_tag="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // empty')"
           if [ -z "$previous_tag" ]; then
             echo "patch_available=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -382,16 +414,19 @@ jobs:
             --arg asset "mehrnet_bgp_postgres.patch.${previous_tag}.sql.gz" \
             '{format: $format, base_release: $base, target_release: $target, source_commit: $source_commit, asset: $asset}' \
             > release/postgres-patch-manifest.json
-          echo "patch_available=true" >> "$GITHUB_OUTPUT"
-      - name: Upload patch release assets
-        if: steps.patch.outputs.patch_available == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-postgres-patch
-          path: release/
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
+          patch_asset="mehrnet_bgp_postgres.patch.${previous_tag}.sql.gz"
+          patch_sha="$(sha256sum "release/$patch_asset" | cut -d ' ' -f 1)"
+          patch_manifest_sha="$(sha256sum release/postgres-patch-manifest.json | cut -d ' ' -f 1)"
+          {
+            echo "patch_available=true"
+            echo "patch_asset=$patch_asset"
+            echo "patch_sha=$patch_sha"
+            echo "patch_manifest_sha=$patch_manifest_sha"
+          } >> "$GITHUB_OUTPUT"
+          gh release upload "$RELEASE_TAG" \
+            "release/$patch_asset" \
+            release/postgres-patch-manifest.json \
+            --clobber
 
   build-api-image:
     name: Build API image and static binaries
@@ -399,6 +434,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       api_image: ${{ format('ghcr.io/{0}/bgp-api@{1}', github.repository, steps.api_image.outputs.digest) }}
+      api_amd64_sha: ${{ steps.api_assets.outputs.api_amd64_sha }}
+      api_arm64_sha: ${{ steps.api_assets.outputs.api_arm64_sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -418,6 +455,17 @@ jobs:
             tar -C release/bin -czf "release/${binary}.tar.gz" "$binary"
             rm "release/bin/$binary"
           done
+      - name: Upload static binaries to draft release
+        id: api_assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+        run: |
+          {
+            echo "api_amd64_sha=$(sha256sum release/bgp-api-linux-amd64.tar.gz | cut -d ' ' -f 1)"
+            echo "api_arm64_sha=$(sha256sum release/bgp-api-linux-arm64.tar.gz | cut -d ' ' -f 1)"
+          } >> "$GITHUB_OUTPUT"
+          gh release upload "$RELEASE_TAG" release/*.tar.gz --clobber
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -440,13 +488,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-api-binaries
-          path: release/*.tar.gz
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
 
   build-sync-image:
     name: Build sync image
@@ -485,12 +526,6 @@ jobs:
       - build-sync-image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: release-*
-          path: release
-          merge-multiple: true
       - name: Write Docker deployment manifest
         env:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
@@ -498,6 +533,7 @@ jobs:
           POSTGRES_IMAGE: ${{ needs.build-postgres.outputs.postgres_image }}
           SYNC_IMAGE: ${{ needs.build-sync-image.outputs.sync_image }}
         run: |
+          mkdir release
           jq -n --arg release "$RELEASE_TAG" --arg api "$API_IMAGE" --arg postgres "$POSTGRES_IMAGE" --arg sync "$SYNC_IMAGE" \
             '{release: $release, images: {api: $api, postgres: $postgres, sync: $sync}}' > release/docker-deployment-manifest.json
       - name: Verify deployment images are publicly pullable
@@ -512,13 +548,76 @@ jobs:
             docker manifest inspect "$image" >/dev/null
           done
       - name: Write checksums
-        run: (cd release && sha256sum ./* > SHA256SUMS.txt)
-      - name: Publish database release
+        env:
+          API_AMD64_SHA: ${{ needs.build-api-image.outputs.api_amd64_sha }}
+          API_ARM64_SHA: ${{ needs.build-api-image.outputs.api_arm64_sha }}
+          POSTGRES_DUMP_SHA: ${{ needs.build-postgres.outputs.postgres_dump_sha }}
+          POSTGRES_INDEXES_SHA: ${{ needs.build-postgres.outputs.postgres_indexes_sha }}
+          PATCH_AVAILABLE: ${{ needs.build-postgres-patch.outputs.patch_available }}
+          PATCH_ASSET: ${{ needs.build-postgres-patch.outputs.patch_asset }}
+          PATCH_SHA: ${{ needs.build-postgres-patch.outputs.patch_sha }}
+          PATCH_MANIFEST_SHA: ${{ needs.build-postgres-patch.outputs.patch_manifest_sha }}
+        run: |
+          {
+            printf '%s  %s\n' "$API_AMD64_SHA" bgp-api-linux-amd64.tar.gz
+            printf '%s  %s\n' "$API_ARM64_SHA" bgp-api-linux-arm64.tar.gz
+            printf '%s  %s\n' "$POSTGRES_DUMP_SHA" mehrnet_bgp_postgres.sql.gz
+            printf '%s  %s\n' "$POSTGRES_INDEXES_SHA" mehrnet_bgp_postgres_indexes.sql
+            if [ "$PATCH_AVAILABLE" = true ]; then
+              printf '%s  %s\n' "$PATCH_SHA" "$PATCH_ASSET"
+              printf '%s  %s\n' "$PATCH_MANIFEST_SHA" postgres-patch-manifest.json
+            fi
+            sha256sum release/docker-deployment-manifest.json | sed 's#release/##'
+          } > release/SHA256SUMS.txt
+          if grep -q '^  ' release/SHA256SUMS.txt; then
+            echo "one or more release asset checksums are missing" >&2
+            exit 1
+          fi
+      - name: Verify and finalize draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           DATA_TAG: ${{ needs.release-metadata.outputs.data_tag }}
+          PATCH_AVAILABLE: ${{ needs.build-postgres-patch.outputs.patch_available }}
+          PATCH_ASSET: ${{ needs.build-postgres-patch.outputs.patch_asset }}
         run: |
-          gh release create "$RELEASE_TAG" release/* \
+          expected=(
+            bgp-api-linux-amd64.tar.gz
+            bgp-api-linux-arm64.tar.gz
+            mehrnet_bgp_postgres.sql.gz
+            mehrnet_bgp_postgres_indexes.sql
+          )
+          if [ "$PATCH_AVAILABLE" = true ]; then
+            expected+=("$PATCH_ASSET" postgres-patch-manifest.json)
+          fi
+          actual="$(gh release view "$RELEASE_TAG" --json isDraft,assets --jq '
+            if .isDraft then [.assets[].name] | sort | .[]
+            else error("release is not a draft")
+            end')"
+          for asset in "${expected[@]}"; do
+            grep -Fxq "$asset" <<< "$actual" || {
+              echo "draft release is missing $asset" >&2
+              exit 1
+            }
+          done
+
+          gh release upload "$RELEASE_TAG" \
+            release/docker-deployment-manifest.json \
+            release/SHA256SUMS.txt \
+            --clobber
+          cat > release/release-notes.md <<'EOF'
+          PostgreSQL-only release of the MehrNet BGP dataset.
+
+          - `mehrnet_bgp_postgres.sql.gz` is the self-contained logical snapshot. Set the psql variable `skip_indexes` to restore only its schema and data.
+          - `mehrnet_bgp_postgres_indexes.sql` contains the independently executable index phase.
+          - `docker-deployment-manifest.json` pins the API, PostgreSQL, and sync container images by digest.
+          - `postgres-patch-manifest.json`, when present, describes the sequential patch from the preceding published release.
+          - `SHA256SUMS.txt` verifies every downloadable release asset.
+
+          The PostgreSQL container image contains the physical, pre-indexed database for the fastest deployment path.
+          EOF
+          gh release edit "$RELEASE_TAG" \
             --title "MehrNet BGP Database - ${DATA_TAG}" \
-            --notes "PostgreSQL-only release. mehrnet_bgp_postgres.sql.gz is the self-contained logical snapshot; set the psql variable skip_indexes to restore only schema/data. mehrnet_bgp_postgres_indexes.sql contains the same index phase separately. The Docker image contains the physical pre-indexed database."
+            --notes-file release/release-notes.md \
+            --draft=false \
+            --latest

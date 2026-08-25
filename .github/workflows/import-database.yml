@@ -202,7 +202,12 @@ jobs:
         run: |
           docker exec bgp-postgres-build psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -c "CHECKPOINT;"
-          docker stop bgp-postgres-build
+          docker stop --time 120 bgp-postgres-build || {
+            state="$(docker inspect --format '{{.State.Status}}' bgp-postgres-build 2>/dev/null || true)"
+            if [ "$state" != "exited" ] && [ "$state" != "dead" ]; then
+              docker kill bgp-postgres-build || true
+            fi
+          }
           test -s build/pgdata/PG_VERSION
           cp docker/postgres/Dockerfile.direct build/Dockerfile
       - name: Log in to GitHub Container Registry

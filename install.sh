@@ -590,7 +590,8 @@ uninstall_deployment() {
     caddy_changed=true
   elif command -v cmp >/dev/null 2>&1 && [ -f "$INSTALL_DIR/deploy/Caddyfile" ] && \
       [ -f "$caddy_main" ] && cmp -s "$INSTALL_DIR/deploy/Caddyfile" "$caddy_main"; then
-    : > "$caddy_main"
+    mkdir -p /etc/caddy/conf.d
+    printf 'import /etc/caddy/conf.d/*.caddy\n' > "$caddy_main"
     caddy_changed=true
   fi
   rm -f -- /etc/bgp-api/caddy.env /etc/systemd/system/caddy.service.d/mehrnet-bgp-api.conf \
@@ -599,14 +600,6 @@ uninstall_deployment() {
     rm -f -- "$BARE_ENV_FILE"
   fi
   rmdir /etc/bgp-api /etc/systemd/system/caddy.service.d 2>/dev/null || true
-  if [ "$caddy_changed" = true ] && [ -f "$caddy_main" ]; then
-    shopt -s nullglob
-    remaining_caddy=(/etc/caddy/conf.d/*.caddy)
-    shopt -u nullglob
-    if [ "${#remaining_caddy[@]}" -eq 0 ]; then
-      sed -i '\|^import /etc/caddy/conf.d/\*\.caddy$|d' "$caddy_main"
-    fi
-  fi
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
     if [ "$caddy_changed" = true ] && systemctl is-active --quiet caddy; then

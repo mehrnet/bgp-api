@@ -264,6 +264,39 @@ jobs:
           SELECT count(*) > 0 FROM public.lookup_prefixes;
           SELECT to_regclass(format('%I.idx_lookup_prefix', :'schema')) IS NOT NULL;
           SQL
+      - name: Vacuum PostgreSQL snapshot for read-only runtime
+        env:
+          POSTGRES_SCHEMA: ${{ needs.release-metadata.outputs.postgres_schema }}
+        run: |
+          vacuum_status=0
+          vacuum_pids=()
+          for table in lookup_prefixes allocation_objects route_objects autnums range_summaries; do
+            docker exec bgp-postgres-build psql -U postgres -d bgp_api -v ON_ERROR_STOP=1 \
+              -c "VACUUM (FREEZE, ANALYZE) \"$POSTGRES_SCHEMA\".$table;" &
+            vacuum_pids+=("$!")
+            if [ "${#vacuum_pids[@]}" -ge 2 ]; then
+              wait "${vacuum_pids[0]}" || vacuum_status=$?
+              vacuum_pids=("${vacuum_pids[@]:1}")
+            fi
+          done
+          for pid in "${vacuum_pids[@]}"; do
+            wait "$pid" || vacuum_status=$?
+          done
+          [ "$vacuum_status" -eq 0 ] || exit "$vacuum_status"
+
+          vacuum_state="$(docker exec bgp-postgres-build psql -U postgres -d bgp_api -At \
+            -v ON_ERROR_STOP=1 -c "
+              SELECT count(*) || '|' || count(*) FILTER (
+                WHERE last_vacuum IS NULL OR n_ins_since_vacuum <> 0
+              )
+              FROM pg_stat_user_tables
+              WHERE schemaname = '$POSTGRES_SCHEMA'
+                AND relname IN ('lookup_prefixes', 'allocation_objects', 'route_objects', 'autnums', 'range_summaries');
+            ")"
+          [ "$vacuum_state" = "5|0" ] || {
+            echo "PostgreSQL snapshot is not vacuum-stable: $vacuum_state" >&2
+            exit 1
+          }
       - name: Prepare indexed PostgreSQL data directory
         run: |
           docker exec bgp-postgres-build psql -U postgres -d postgres -v ON_ERROR_STOP=1 \

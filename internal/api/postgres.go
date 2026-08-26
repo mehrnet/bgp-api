@@ -347,7 +347,9 @@ func (repository *PostgresRepository) prefixAllocation(ctx context.Context, pref
 		SELECT id, start_ip_sort, end_ip_sort, ip_version, registry, country, netname, status, allocation_date,
 		       created, last_modified, record_source, mnt_by, org, to_jsonb(allocation_objects)->>'abuse_contact', description
 		FROM allocation_objects
-		WHERE ip_version = $1 AND start_ip_sort <= $2 AND end_ip_sort >= $3
+		WHERE ip_version = $1
+		  AND numrange(start_ip_sort::numeric, end_ip_sort::numeric, '[]')
+		      @> numrange($2::numeric, $3::numeric, '[]')
 		ORDER BY start_ip_sort DESC, end_ip_sort ASC, id
 		LIMIT 1
 	`, prefix.Version, prefix.Start.SortKey, prefix.End.SortKey)

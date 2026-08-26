@@ -5,7 +5,8 @@ set -euo pipefail
 
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
 readonly DATABASE_ROLE="${BGP_API_DATABASE_ROLE:-bgp_api}"
-readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-postgres.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bgp-api-postgres.XXXXXX")"
+readonly WORK_DIR
 readonly RELEASE_DIR="$WORK_DIR/release"
 readonly SYNC_MODE="${BGP_API_SYNC_MODE:-patch}"
 readonly SYNC_BINARY="${BGP_API_SYNC_BINARY:-1}"
@@ -377,6 +378,8 @@ fi
 
 if [ "$SYNC_MODE" = snapshot ]; then
   sync_snapshot "$latest_tag" "$active_schema"
+  load_release "$latest_tag"
+  sync_binary "$latest_tag"
 else
   [ -n "$active_tag" ] && [ -n "$active_schema" ] || die "no active dataset; bootstrap with BGP_API_SYNC_MODE=snapshot"
   validate_dataset_schema "$active_schema"

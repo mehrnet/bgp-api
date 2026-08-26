@@ -10,24 +10,31 @@ The public static frontend for `https://bgp.mehrnet.com` is maintained in
 
 ## Quick Install
 
-The unattended installer deploys the latest digest-pinned API, updater, and
-pre-indexed PostgreSQL images. It installs Docker when needed, verifies the
-release deployment manifest, and waits for the API to become healthy.
+The unattended installer has two explicit deployment modes:
 
-The Docker deployment currently requires:
+| Mode | Bootstrap | Hosts | Free space | Best use |
+| --- | --- | --- | --- | --- |
+| `docker` | Pre-indexed PostgreSQL image | Linux amd64 | 12 GiB | Fastest installation and simplest operation |
+| `bare` | Logical snapshot restored into host PostgreSQL | Linux amd64/arm64 with systemd | 18 GiB | Host-managed PostgreSQL and native systemd service |
 
-- a Linux amd64 server
-- root access
-- at least 12 GiB of free space in Docker's storage filesystem
-- ports 80 and 443 when using the automatic Caddy setup
+Docker mode is the default, but production commands should include `--mode`
+so their intent is unambiguous. Both modes verify release checksums, bind the
+API only to `127.0.0.1:3102`, and use sequential patches for daily updates.
+Root access is required. Ports 80 and 443 are required only for Caddy setup.
 
 ### Localhost only
 
-This leaves the service accessible only at `127.0.0.1:3102` and does not
-require an origin-authentication header:
+Docker mode downloads the pre-indexed database and starts it directly:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --mode docker
+```
+
+Bare mode installs PostgreSQL, imports and indexes the release snapshot, then
+installs the static API binary and systemd service:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --mode bare
 ```
 
 Check it immediately:
@@ -43,44 +50,49 @@ Point the domain's DNS record to the server first. The domain variant installs
 Caddy, obtains TLS certificates, keeps the API bound to localhost, and creates
 a private origin token shared by Caddy and the API:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --domain bgp-api.example.com
-```
-
-Add `--auto-update` to either installation command to install the daily update
-job at exactly 06:00 UTC:
+Choose either mode and pass the API hostname:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --auto-update
-```
-
-Or combine the domain and automatic-update setup:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --domain bgp-api.example.com --auto-update
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --mode docker --domain bgp-api.example.com
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --mode bare --domain bgp-api.example.com
 ```
 
 The Caddy setup supports direct traffic and Cloudflare-proxied DNS. Keep TCP
 ports 80 and 443 reachable so Caddy can provision and renew certificates.
+Add `--auto-update` to either command to install the daily update job at exactly
+06:00 UTC:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --mode docker --domain bgp-api.example.com --auto-update
+```
 
 ### Update
 
-Run an update at any time with:
+The installer remembers its mode, so the short command is sufficient:
 
 ```sh
 sudo /srv/bgp-api/install.sh --update
 ```
 
+Automation may state the mode explicitly and will fail safely if it does not
+match the installed deployment:
+
+```sh
+sudo /srv/bgp-api/install.sh --mode docker --update
+sudo /srv/bgp-api/install.sh --mode bare --update
+```
+
 Normal updates verify the new release, apply every sequential PostgreSQL patch,
-and replace only the API and updater images. They do not recreate the active
-PostgreSQL container or download another full database image.
+and update the matching API image or static binary. Docker mode does not
+recreate the active PostgreSQL container or download another full database
+image.
 
 For manual scheduling, open root's crontab with `sudo crontab -e` and add these
 lines:
 
 ```cron
 CRON_TZ=UTC
-0 6 * * * /srv/bgp-api/install.sh --update >> /var/log/mehrnet-bgp-api-update.log 2>&1
+0 6 * * * /srv/bgp-api/install.sh --mode docker --update >> /var/log/mehrnet-bgp-api-update.log 2>&1
 ```
 
 The `--auto-update` option writes the equivalent schedule to
@@ -88,9 +100,9 @@ The `--auto-update` option writes the equivalent schedule to
 
 ### Uninstall
 
-This stops and removes the API and PostgreSQL containers, the database writable
-layer, deployment images, automatic-update job, managed Caddy configuration,
-and `/srv/bgp-api`:
+This permanently removes the selected deployment's API and database data,
+automatic-update job, managed Caddy configuration, and `/srv/bgp-api`. The mode
+is normally detected from the installation:
 
 ```sh
 sudo /srv/bgp-api/install.sh --uninstall
@@ -103,9 +115,10 @@ installer directly:
 curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --uninstall
 ```
 
-The uninstall is non-interactive and permanently removes the local database.
-It deliberately leaves Docker and Caddy installed because other applications
-may depend on them.
+Use `--mode docker --uninstall` or `--mode bare --uninstall` to require a mode
+match. The uninstall is non-interactive. It deliberately leaves Docker,
+PostgreSQL, and Caddy packages installed because other applications may depend
+on them.
 
 Useful operational commands:
 
@@ -114,6 +127,7 @@ cd /srv/bgp-api
 sudo docker compose --env-file .env -f docker-compose.yml ps
 sudo docker compose --env-file .env -f docker-compose.yml logs -f api
 sudo docker compose --env-file .env -f docker-compose.yml restart api
+journalctl -u bgp-api -f
 ```
 
 Do not use `docker compose down` or remove the PostgreSQL container. Its

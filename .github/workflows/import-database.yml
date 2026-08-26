@@ -132,12 +132,20 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  build-bbolt:
-    name: Build pre-indexed bbolt database
+  build-database:
+    name: Build pre-indexed ${{ matrix.format }} database
     needs: [release-metadata, parse-rir, prepare-geofeeds]
     runs-on: ubuntu-latest
-    outputs:
-      asset_sha: ${{ steps.asset.outputs.asset_sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - format: bbolt
+            database: mehrnet_bgp.bbolt
+            asset: mehrnet_bgp_bbolt.tar.zst
+          - format: sqlite
+            database: mehrnet_bgp.db
+            asset: mehrnet_bgp_sqlite.tar.zst
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -158,7 +166,8 @@ jobs:
           cat artifacts/routes_*.csv > final_data/routes.csv
           cat artifacts/autnums_*.csv > final_data/autnums.csv
           test -s final_data/geolocations.csv
-      - name: Build immutable database
+      - name: Build immutable bbolt database
+        if: matrix.format == 'bbolt'
         env:
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
           DATASET_BUILT_AT: ${{ needs.release-metadata.outputs.dataset_built_at }}
@@ -172,7 +181,8 @@ jobs:
             -source-commit "$GITHUB_SHA" \
             -compact=true
           test -s mehrnet_bgp.bbolt
-      - name: Validate runtime contract
+      - name: Validate bbolt runtime contract
+        if: matrix.format == 'bbolt'
         env:
           BGP_API_DATABASE_PATH: ${{ github.workspace }}/mehrnet_bgp.bbolt
           BGP_API_VALIDATE_ONLY: "1"
@@ -180,15 +190,40 @@ jobs:
           go test ./internal/api ./internal/boltstore
           go build -trimpath -o bgp-api ./cmd/bgp-api
           ./bgp-api
+      - name: Build immutable SQLite database
+        if: matrix.format == 'sqlite'
+        env:
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+          DATASET_BUILT_AT: ${{ needs.release-metadata.outputs.dataset_built_at }}
+        run: |
+          go build -trimpath -o build-sqlite-dataset ./cmd/build-sqlite-dataset
+          go build -trimpath -o build-prefix-index ./cmd/build-prefix-index
+          go build -trimpath -o build-range-summaries ./cmd/build-range-summaries
+          go build -trimpath -o validate-database ./cmd/validate-database
+          ./build-sqlite-dataset \
+            -input final_data \
+            -output mehrnet_bgp.db \
+            -release-tag "$RELEASE_TAG" \
+            -built-at "$DATASET_BUILT_AT" \
+            -source-commit "$GITHUB_SHA"
+          ./build-prefix-index mehrnet_bgp.db
+          ./build-range-summaries mehrnet_bgp.db
+          ./validate-database -indexed mehrnet_bgp.db
+          test -s mehrnet_bgp.db
       - name: Compress and upload database
-        id: asset
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
         run: |
-          tar --create --file - mehrnet_bgp.bbolt | zstd --threads=0 -3 --stdout > mehrnet_bgp_bbolt.tar.zst
-          echo "asset_sha=$(sha256sum mehrnet_bgp_bbolt.tar.zst | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-          gh release upload "$RELEASE_TAG" mehrnet_bgp_bbolt.tar.zst --clobber
+          tar --create --file - "${{ matrix.database }}" | zstd --threads=0 -3 --stdout > "${{ matrix.asset }}"
+          sha256sum "${{ matrix.asset }}" > "checksum-${{ matrix.format }}.txt"
+          gh release upload "$RELEASE_TAG" "${{ matrix.asset }}" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checksum-${{ matrix.format }}
+          path: checksum-${{ matrix.format }}.txt
+          retention-days: 1
+          if-no-files-found: error
 
   build-api-binaries:
     name: Build static API binaries
@@ -230,20 +265,24 @@ jobs:
 
   publish-release:
     name: Publish database release
-    needs: [release-metadata, build-bbolt, build-api-binaries]
+    needs: [release-metadata, build-database, build-api-binaries]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: checksum-*
+          path: checksums
+          merge-multiple: true
       - name: Write checksums
         env:
           AMD64_SHA: ${{ needs.build-api-binaries.outputs.amd64_sha }}
           ARM64_SHA: ${{ needs.build-api-binaries.outputs.arm64_sha }}
-          BBOLT_SHA: ${{ needs.build-bbolt.outputs.asset_sha }}
         run: |
           mkdir release
           {
             printf '%s  %s\n' "$AMD64_SHA" bgp-api-linux-amd64.tar.gz
             printf '%s  %s\n' "$ARM64_SHA" bgp-api-linux-arm64.tar.gz
-            printf '%s  %s\n' "$BBOLT_SHA" mehrnet_bgp_bbolt.tar.zst
+            cat checksums/*.txt
           } > release/SHA256SUMS.txt
           if grep -q '^  ' release/SHA256SUMS.txt; then
             echo "one or more release asset checksums are missing" >&2
@@ -262,7 +301,8 @@ jobs:
           for asset in \
             bgp-api-linux-amd64.tar.gz \
             bgp-api-linux-arm64.tar.gz \
-            mehrnet_bgp_bbolt.tar.zst; do
+            mehrnet_bgp_bbolt.tar.zst \
+            mehrnet_bgp_sqlite.tar.zst; do
             grep -Fxq "$asset" <<< "$actual" || {
               echo "draft release is missing $asset" >&2
               exit 1
@@ -270,9 +310,10 @@ jobs:
           done
           gh release upload "$RELEASE_TAG" release/SHA256SUMS.txt --clobber
           cat > release/release-notes.md <<'EOF'
-          Immutable, fully indexed MehrNet BGP dataset for the low-resource Go runtime.
+          Immutable, fully indexed MehrNet BGP datasets.
 
           - `mehrnet_bgp_bbolt.tar.zst` contains the ready-to-query bbolt database. No import or index build is required on the API server.
+          - `mehrnet_bgp_sqlite.tar.zst` contains the ready-to-query SQLite database for third-party users and offline inspection.
           - `bgp-api-linux-amd64.tar.gz` and `bgp-api-linux-arm64.tar.gz` contain statically linked API binaries.
           - `SHA256SUMS.txt` verifies every downloadable payload.
           EOF

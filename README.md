@@ -2,8 +2,9 @@
 
 Public IP-to-BGP, allocation, ASN, and geofeed lookup API for
 `bgp-api.mehrnet.com`. The Go server reads one immutable, pre-indexed bbolt
-file. It does not build indexes, run migrations, or contact upstream services
-while answering requests.
+file. Releases also include a pre-indexed SQLite database for third-party users
+and offline inspection. The API does not build indexes, run migrations, or
+contact upstream services while answering requests.
 
 The public frontend is maintained in
 [`mehrnet/bgp`](https://github.com/mehrnet/bgp).
@@ -146,13 +147,20 @@ BGP_API_VALIDATE_ONLY=1 ./bin/bgp-api
 ## Dataset Production
 
 The daily workflow runs at 04:00 UTC and can also be dispatched manually. Five
-RIR parsers run as a matrix, geofeeds are fetched once, and one builder writes
-the indexed bbolt file directly from the merged CSV streams. Static Linux
-binaries build in parallel with dataset preparation.
+RIR parsers run as a matrix, geofeeds are fetched once, and the final database
+job runs a second matrix for the release formats:
+
+| Format | Asset | Purpose |
+| --- | --- | --- |
+| bbolt | `mehrnet_bgp_bbolt.tar.zst` | Production API runtime |
+| SQLite | `mehrnet_bgp_sqlite.tar.zst` | Third-party users and offline inspection |
+
+Static Linux binaries build in parallel with dataset preparation.
 
 Each release contains:
 
 - `mehrnet_bgp_bbolt.tar.zst`
+- `mehrnet_bgp_sqlite.tar.zst`
 - `bgp-api-linux-amd64.tar.gz`
 - `bgp-api-linux-arm64.tar.gz`
 - `SHA256SUMS.txt`
@@ -168,8 +176,22 @@ go run ./cmd/build-bbolt-dataset \
   -source-commit "$(git rev-parse HEAD)"
 ```
 
-The repository retains SQLite conversion and validation commands for optional
-offline exports. They are not used by the API runtime or daily release job.
+Build the SQLite release database from the same `final_data/` directory:
+
+```sh
+go run ./cmd/build-sqlite-dataset \
+  -input final_data \
+  -output mehrnet_bgp.db \
+  -release-tag local \
+  -built-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -source-commit "$(git rev-parse HEAD)"
+go run ./cmd/build-prefix-index mehrnet_bgp.db
+go run ./cmd/build-range-summaries mehrnet_bgp.db
+go run ./cmd/validate-database -indexed mehrnet_bgp.db
+```
+
+The SQLite asset is shipped ready to query; consumers do not need to rebuild
+indexes or range summaries.
 
 ## Development
 

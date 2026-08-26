@@ -180,8 +180,8 @@ configure_caddy() {
   BGP_API_DOMAIN="$DOMAIN" ORIGIN_AUTH_TOKEN="$token" \
     caddy validate --config "$main_config" --adapter caddyfile
   systemctl daemon-reload
-  systemctl enable --now caddy >/dev/null
-  systemctl reload caddy
+  systemctl enable caddy >/dev/null
+  systemctl restart caddy
 }
 
 install_auto_update() {

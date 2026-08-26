@@ -361,7 +361,7 @@ jobs:
           command -v zstd >/dev/null
           tar --create --directory build/pgdata --file - . | \
             zstd --threads=0 -1 --stdout > build/pgdata.tar.zst
-          rm -rf build/pgdata
+          sudo rm -rf build/pgdata
           cp docker/postgres/Dockerfile.direct build/Dockerfile
           cp docker/postgres/snapshot-entrypoint.sh build/snapshot-entrypoint.sh
       - name: Set up Docker Buildx

@@ -267,7 +267,14 @@ install -m 0644 "$work_dir/bgp-api.service" "$SERVICE_FILE"
 install -m 0644 "$work_dir/bgp-api-sync.service" "$SYNC_SERVICE_FILE"
 
 origin_token=""
-if [ "$DOMAIN_SET" = true ]; then origin_token="$(openssl rand -hex 32)"; fi
+if [ "$DOMAIN_SET" = true ]; then
+  if [ -f "$ENV_FILE" ]; then
+    origin_token="$(sed -n 's/^ORIGIN_AUTH_TOKEN=//p' "$ENV_FILE" | head -n 1)"
+  fi
+  if ! [[ "$origin_token" =~ ^[0-9a-f]{64}$ ]]; then
+    origin_token="$(openssl rand -hex 32)"
+  fi
+fi
 cat > "$ENV_FILE" <<EOF
 BGP_API_DATABASE_PATH=$DATA_DIR/mehrnet_bgp.bbolt
 LISTEN_ADDR=127.0.0.1:3102
@@ -294,6 +301,8 @@ systemctl daemon-reload
 systemctl enable bgp-api.service >/dev/null
 step "Downloading and activating the latest verified release"
 "$SYNC_SCRIPT"
+systemctl restart bgp-api.service
+systemctl is-active --quiet bgp-api.service || die "bgp-api failed to start"
 
 if [ "$DOMAIN_SET" = true ]; then
   step "Configuring HTTPS for $DOMAIN"

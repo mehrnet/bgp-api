@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"math/big"
 	"net"
@@ -171,7 +172,7 @@ type errorResponse struct {
 
 func New(repository Repository, config Config) http.Handler {
 	if config.DatabaseEngine == "" {
-		config.DatabaseEngine = "postgresql"
+		config.DatabaseEngine = "bbolt"
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if config.OriginAuthToken != "" && request.Header.Get("X-BGP-API-Origin-Token") != config.OriginAuthToken {
@@ -261,6 +262,10 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 	}
 	response, err := resources.LookupPrefix(request.Context(), prefix, page)
 	if err != nil {
+		if errors.Is(err, errBboltQueryTooBroad) {
+			writeError(writer, http.StatusUnprocessableEntity, "QUERY_TOO_BROAD", "prefix matches too many source records; request a narrower prefix")
+			return
+		}
 		log.Printf("prefix lookup failed for %s: %v", prefix.Canonical, err)
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected prefix lookup failure")
 		return
@@ -306,6 +311,10 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 		response, err = resources.LookupRange(request.Context(), rangeValue, kind, page)
 	}
 	if err != nil {
+		if errors.Is(err, errBboltQueryTooBroad) {
+			writeError(writer, http.StatusUnprocessableEntity, "QUERY_TOO_BROAD", "range matches too many source records; use a canonical IPv4 CIDR from /0 through /16 for a generated summary, or request a narrower range")
+			return
+		}
 		log.Printf("range lookup failed for %s-%s: %v", rangeValue.Start.Canonical, rangeValue.End.Canonical, err)
 		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected range lookup failure")
 		return

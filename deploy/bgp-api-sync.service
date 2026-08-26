@@ -1,0 +1,9 @@
+[Unit]
+Description=Update MehrNet BGP API dataset
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/bgp-api/update.env
+ExecStart=/usr/bin/flock -n /run/lock/mehrnet-bgp-api-update.lock /srv/bgp-api/scripts/sync-bbolt.sh

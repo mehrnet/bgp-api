@@ -32,6 +32,16 @@ func (fakeRepository) DatasetMetadata(context.Context) (*DatasetMetadata, error)
 
 type resourceFakeRepository struct{ fakeRepository }
 
+type broadQueryFakeRepository struct{ resourceFakeRepository }
+
+func (broadQueryFakeRepository) LookupPrefix(context.Context, ipkey.ParsedPrefix, Page) (*PrefixResponse, error) {
+	return nil, errBboltQueryTooBroad
+}
+
+func (broadQueryFakeRepository) LookupRange(context.Context, ipkey.ParsedRange, RangeKind, Page) (*RangeResponse, error) {
+	return nil, errBboltQueryTooBroad
+}
+
 func (resourceFakeRepository) LookupPrefix(_ context.Context, prefix ipkey.ParsedPrefix, _ Page) (*PrefixResponse, error) {
 	return &PrefixResponse{
 		Prefix: PrefixDescriptor{CIDR: prefix.Canonical, Version: prefix.Version, StartIP: prefix.Start.Canonical, EndIP: prefix.End.Canonical, AddressCount: prefix.AddressCount},
@@ -64,7 +74,7 @@ func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, page Page
 }
 
 func TestHandlerRejectsInvalidIP(t *testing.T) {
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql"})
+	handler := New(fakeRepository{}, Config{DatabaseEngine: "bbolt"})
 	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=not-an-ip", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -77,7 +87,7 @@ func TestHandlerRejectsInvalidIP(t *testing.T) {
 }
 
 func TestHandlerRequiresOriginToken(t *testing.T) {
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql", OriginAuthToken: "shared-token"})
+	handler := New(fakeRepository{}, Config{DatabaseEngine: "bbolt", OriginAuthToken: "shared-token"})
 	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -96,7 +106,7 @@ func TestHealthIncludesDatasetMetadata(t *testing.T) {
 	version := "db-2026.07.27-0719-9"
 	commit := "62a5fd6b0c94e7f58aaeb4cf8e44394ab054c340"
 	builtAt := "2026-07-27T07:27:00Z"
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "postgresql", Build: BuildInfo{Version: &version, Commit: &commit, BuiltAt: &builtAt}})
+	handler := New(fakeRepository{}, Config{DatabaseEngine: "bbolt", Build: BuildInfo{Version: &version, Commit: &commit, BuiltAt: &builtAt}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -226,6 +236,21 @@ func TestHandlerRejectsInvalidResourceQueries(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, body = %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestHandlerBoundsRecordOverlapQueries(t *testing.T) {
+	handler := New(broadQueryFakeRepository{}, Config{})
+	for _, path := range []string{
+		"/v1/prefix?prefix=1.1.1.0%2F24",
+		"/v1/range?start=1.1.1.1&end=1.1.1.2",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), `"code":"QUERY_TOO_BROAD"`) {
 			t.Fatalf("%s: status = %d, body = %s", path, response.Code, response.Body.String())
 		}
 	}

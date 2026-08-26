@@ -1,0 +1,143 @@
+package api
+
+import (
+	"context"
+	"encoding/csv"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/mehrnet/bgp-api/internal/boltstore"
+	"github.com/mehrnet/bgp-api/internal/ipkey"
+)
+
+func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
+	repository := testBboltRepository(t)
+	ctx := context.Background()
+
+	ip, _ := ipkey.Parse("1.1.1.1")
+	lookup, err := repository.Lookup(ctx, ip, LookupOptions{Details: LookupDetailsFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lookup == nil || lookup.Registry == nil || *lookup.Registry != "apnic" || len(lookup.Network.ASNs) != 2 || lookup.Location.City == nil || *lookup.Location.City != "South Brisbane" {
+		t.Fatalf("lookup = %#v", lookup)
+	}
+	if lookup.Details == nil || len(lookup.Details.Allocations) != 2 || len(lookup.Details.Routes) != 2 {
+		t.Fatalf("lookup details = %#v", lookup.Details)
+	}
+
+	prefix, _ := ipkey.ParsePrefix("1.1.1.0/24")
+	prefixResponse, err := repository.LookupPrefix(ctx, prefix, Page{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prefixResponse.Allocation == nil || prefixResponse.Allocation.Name == nil || *prefixResponse.Allocation.Name != "APNIC-LABS" || len(prefixResponse.Routes.Items) != 1 || prefixResponse.Routes.NextCursor == nil {
+		t.Fatalf("prefix response = %#v", prefixResponse)
+	}
+
+	rangeValue, _ := ipkey.ParseRange("1.1.1.1", "1.1.1.2")
+	rangeResponse, err := repository.LookupRange(ctx, rangeValue, RangeAllocations, Page{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rangeResponse.Allocations) != 2 || rangeResponse.Mode != "records" {
+		t.Fatalf("range response = %#v", rangeResponse)
+	}
+
+	broadRange, _ := ipkey.ParseRange("1.0.0.0", "1.255.255.255")
+	summary, err := repository.LookupRangeSummary(ctx, broadRange, RangeRoutes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary == nil || summary.Summary.RouteRecords != 2 || summary.Summary.AllocationRecords != 2 {
+		t.Fatalf("summary = %#v", summary.Summary)
+	}
+
+	asnResponse, err := repository.LookupASN(ctx, 13335, Page{Limit: 1, Number: 1, Numbered: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asnResponse == nil || asnResponse.Autnum == nil || asnResponse.Autnum.Name == nil || *asnResponse.Autnum.Name != "CLOUDFLARENET" || asnResponse.Routes.TotalItems != 1 || asnResponse.Routes.TotalPages != 1 {
+		t.Fatalf("ASN response = %#v", asnResponse)
+	}
+
+	metadata, err := repository.DatasetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata == nil || metadata.ReleaseTag == nil || *metadata.ReleaseTag != "db-test" || metadata.ActivatedAt == nil {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func BenchmarkBboltLookupIP(b *testing.B) {
+	repository := testBboltRepository(b)
+	ip, _ := ipkey.Parse("1.1.1.1")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if _, err := repository.Lookup(context.Background(), ip, LookupOptions{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+type testingTB interface {
+	Helper()
+	TempDir() string
+	Cleanup(func())
+	Fatal(...any)
+}
+
+func testBboltRepository(tb testingTB) *BboltRepository {
+	tb.Helper()
+	directory := tb.TempDir()
+	writeTestCSV(tb, filepath.Join(directory, "allocations.csv"), [][]string{
+		{sortKey("1.0.0.0"), sortKey("1.255.255.255"), "4", "APNIC", "AU", "APNIC-1", "ALLOCATED PORTABLE", "2011-08-11", "", "", "APNIC", "", "", "", ""},
+		{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "APNIC", "AU", "APNIC-LABS", "ALLOCATED PORTABLE", "2011-08-11", "", "", "APNIC", "", "", "abuse@example.test", ""},
+	})
+	writeTestCSV(tb, filepath.Join(directory, "routes.csv"), [][]string{
+		{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "1.1.1.0/24", "AS13335", "APNIC", "APNIC", "", "", "abuse@example.test", ""},
+		{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "1.1.1.0/24", "AS64500", "APNIC", "APNIC", "", "", "", ""},
+	})
+	writeTestCSV(tb, filepath.Join(directory, "geolocations.csv"), [][]string{{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "AU", "Queensland", "South Brisbane"}})
+	writeTestCSV(tb, filepath.Join(directory, "autnums.csv"), [][]string{{"AS13335", "APNIC", "US", "CLOUDFLARENET", "ORG-CLOUD14-ARIN", "ASSIGNED", "", "", "APNIC", "", "abuse@example.test", ""}})
+	path := filepath.Join(directory, "mehrnet_bgp.bbolt")
+	stats, err := boltstore.Build(context.Background(), boltstore.BuildOptions{InputDir: directory, OutputPath: path, ReleaseTag: "db-test", BuiltAt: "2026-08-26T00:00:00Z", SourceCommit: "abcdef", Compact: true})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	if stats.Allocations != 2 || stats.Routes != 2 || stats.Geofeeds != 1 || stats.Autnums != 1 {
+		tb.Fatal("unexpected build stats: ", stats)
+	}
+	repository, err := NewBboltRepository(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = repository.Close() })
+	return repository
+}
+
+func writeTestCSV(tb testingTB, path string, rows [][]string) {
+	tb.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	writer := csv.NewWriter(file)
+	for _, row := range rows {
+		if err := writer.Write(row); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		tb.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		tb.Fatal(err)
+	}
+}
+
+func sortKey(value string) string { parsed, _ := ipkey.Parse(value); return parsed.SortKey }

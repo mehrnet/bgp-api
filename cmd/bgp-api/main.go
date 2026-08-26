@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mehrnet/bgp-api/internal/api"
 )
 
@@ -24,25 +23,30 @@ var (
 )
 
 func main() {
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is required")
+	path := os.Getenv("BGP_API_DATABASE_PATH")
+	if path == "" {
+		path = "/var/lib/bgp-api/mehrnet_bgp.bbolt"
 	}
-	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	store, err := api.NewBboltRepository(path)
 	if err != nil {
-		log.Fatalf("parse DATABASE_URL: %v", err)
+		log.Fatalf("open bbolt dataset: %v", err)
 	}
-	poolConfig.MaxConns = int32(environmentInt("POSTGRES_MAX_CONNECTIONS", 8))
-	poolConfig.MinConns = 1
-	poolConfig.MaxConnLifetime = 30 * time.Minute
-
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
-	if err != nil {
-		log.Fatalf("connect PostgreSQL: %v", err)
-	}
-	defer pool.Close()
-	if err := pool.Ping(context.Background()); err != nil {
-		log.Fatalf("ping PostgreSQL: %v", err)
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close bbolt dataset: %v", err)
+		}
+	}()
+	if os.Getenv("BGP_API_VALIDATE_ONLY") == "1" {
+		metadata, err := store.DatasetMetadata(context.Background())
+		if err != nil {
+			log.Fatalf("validate bbolt dataset: %v", err)
+		}
+		releaseTag := "unknown"
+		if metadata.ReleaseTag != nil {
+			releaseTag = *metadata.ReleaseTag
+		}
+		log.Printf("validated bbolt dataset %s", releaseTag)
+		return
 	}
 
 	config := api.Config{
@@ -53,10 +57,10 @@ func main() {
 			Commit:  stringPointer(commit),
 			BuiltAt: stringPointer(builtAt),
 		},
-		DatabaseEngine: "postgresql",
+		DatabaseEngine: "bbolt",
 		TrustedProxies: trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
 	}
-	handler := api.New(api.NewPostgresRepository(pool), config)
+	handler := api.New(store, config)
 	server := &http.Server{
 		Addr:              listenAddress(),
 		Handler:           handler,

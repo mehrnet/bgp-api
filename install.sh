@@ -571,7 +571,13 @@ uninstall_deployment() {
   fi
 
   step "Removing the updater and Caddy configuration"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now bgp-api-docker-sync.timer >/dev/null 2>&1 || true
+    systemctl stop bgp-api-docker-sync.service >/dev/null 2>&1 || true
+  fi
   rm -f -- "$CRON_FILE" /var/log/mehrnet-bgp-api-update.log
+  rm -f -- /etc/systemd/system/bgp-api-docker-sync.service \
+    /etc/systemd/system/bgp-api-docker-sync.timer
   if command -v crontab >/dev/null 2>&1 && root_crontab="$(crontab -l 2>/dev/null)"; then
     filtered_crontab="$(awk -v script="$INSTALLED_SCRIPT" 'index($0, script " --update") == 0' <<<"$root_crontab")"
     if [ "$filtered_crontab" != "$root_crontab" ]; then
@@ -582,8 +588,16 @@ uninstall_deployment() {
   if [ -e "$managed_caddy" ]; then
     rm -f -- "$managed_caddy"
     caddy_changed=true
+  elif command -v cmp >/dev/null 2>&1 && [ -f "$INSTALL_DIR/deploy/Caddyfile" ] && \
+      [ -f "$caddy_main" ] && cmp -s "$INSTALL_DIR/deploy/Caddyfile" "$caddy_main"; then
+    : > "$caddy_main"
+    caddy_changed=true
   fi
-  rm -f -- /etc/bgp-api/caddy.env /etc/systemd/system/caddy.service.d/mehrnet-bgp-api.conf
+  rm -f -- /etc/bgp-api/caddy.env /etc/systemd/system/caddy.service.d/mehrnet-bgp-api.conf \
+    /etc/systemd/system/caddy.service.d/bgp-api.conf
+  if [ "$DEPLOY_MODE" = docker ]; then
+    rm -f -- "$BARE_ENV_FILE"
+  fi
   rmdir /etc/bgp-api /etc/systemd/system/caddy.service.d 2>/dev/null || true
   if [ "$caddy_changed" = true ] && [ -f "$caddy_main" ]; then
     shopt -s nullglob

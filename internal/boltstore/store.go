@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	SchemaVersion     = 2
+	SchemaVersion     = 3
 	PrefixKeySize     = 18
 	IndexKeySize      = PrefixKeySize + 8
 	RangeIndexKeySize = 1 + 16 + 16 + 8
@@ -22,6 +22,7 @@ var (
 	BucketAutnums         = []byte("autnums")
 	BucketAllocationIndex = []byte("allocation_prefixes")
 	BucketRouteIndex      = []byte("route_prefixes")
+	BucketRouteLPM        = []byte("route_lpm")
 	BucketGeofeedIndex    = []byte("geofeed_prefixes")
 	BucketAllocationRange = []byte("allocation_ranges")
 	BucketRouteRange      = []byte("route_ranges")
@@ -31,7 +32,7 @@ var (
 	KeyReleaseTag         = []byte("release_tag")
 	KeyBuiltAt            = []byte("built_at")
 	KeySourceCommit       = []byte("source_commit")
-	RequiredBuckets       = [][]byte{BucketMetadata, BucketAllocations, BucketRoutes, BucketGeofeeds, BucketAutnums, BucketAllocationIndex, BucketRouteIndex, BucketGeofeedIndex, BucketAllocationRange, BucketRouteRange, BucketASNRoutes, BucketRangeSummaries}
+	RequiredBuckets       = [][]byte{BucketMetadata, BucketAllocations, BucketRoutes, BucketGeofeeds, BucketAutnums, BucketAllocationIndex, BucketRouteIndex, BucketRouteLPM, BucketGeofeedIndex, BucketAllocationRange, BucketRouteRange, BucketASNRoutes, BucketRangeSummaries}
 )
 
 type Address [16]byte

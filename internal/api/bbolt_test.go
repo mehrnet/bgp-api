@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -40,6 +42,13 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	lookup.Details = nil
 	if !reflect.DeepEqual(compact, lookup) {
 		t.Fatalf("compact response diverged from details=full response:\ncompact=%#v\nfull=%#v", compact, lookup)
+	}
+	legacyCompact, err := lookupCompactPrefixScan(repository, ip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(compact, legacyCompact) {
+		t.Fatalf("route LPM response diverged from compact prefix scan:\nlpm=%#v\nscan=%#v", compact, legacyCompact)
 	}
 
 	prefix, _ := ipkey.ParsePrefix("1.1.1.0/24")
@@ -180,6 +189,132 @@ func BenchmarkBboltLookupIPFull(b *testing.B) {
 	}
 }
 
+func BenchmarkBboltLookupIPPrefixScan(b *testing.B) {
+	repository := testBboltRepository(b)
+	ip, _ := ipkey.Parse("1.1.1.1")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if _, err := lookupCompactPrefixScan(repository, ip); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// lookupCompactPrefixScan is the compact lookup before the producer-built
+// route LPM. Keeping it test-only makes the end-to-end benchmark comparable
+// without retaining the old path in production.
+func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.Parsed) (*LookupResponse, error) {
+	address := netip.MustParseAddr(ip.Canonical)
+	var allocations []boltstore.Allocation
+	var routes []boltstore.Route
+	var geofeeds []boltstore.Geofeed
+	err := repository.db.View(func(transaction *bbolt.Tx) error {
+		allocationIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range allocationIDs {
+			record, err := allocationLookupByID(transaction, id)
+			if err != nil {
+				return err
+			}
+			allocations = append(allocations, record)
+		}
+		routeIDs, err := matchingMostSpecificIPIDsForTest(context.Background(), transaction.Bucket(boltstore.BucketRouteIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range routeIDs {
+			record, err := routeLookupByID(transaction, id)
+			if err != nil {
+				return err
+			}
+			routes = append(routes, record)
+		}
+		geofeedIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range geofeedIDs {
+			record, err := geofeedByID(transaction, id)
+			if err != nil {
+				return err
+			}
+			geofeeds = append(geofeeds, record)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{}), nil
+}
+
+func BenchmarkBboltRouteLPM(b *testing.B) {
+	repository := testBboltRepository(b)
+	address, _ := ipkey.Parse("1.1.1.1")
+	query := netip.MustParseAddr(address.Canonical)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		err := repository.db.View(func(transaction *bbolt.Tx) error {
+			value := transaction.Bucket(boltstore.BucketRouteLPM).Get(boltstore.RouteLPMKey(uint8(address.Version)))
+			_, err := boltstore.LookupRouteLPM(value, query)
+			return err
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkBboltRoutePrefixScan is the former compact-route selection path.
+// It is retained in tests to quantify the benefit of the immutable LPM index.
+func BenchmarkBboltRoutePrefixScan(b *testing.B) {
+	repository := testBboltRepository(b)
+	address, _ := ipkey.Parse("1.1.1.1")
+	query := netip.MustParseAddr(address.Canonical)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		err := repository.db.View(func(transaction *bbolt.Tx) error {
+			_, err := matchingMostSpecificIPIDsForTest(context.Background(), transaction.Bucket(boltstore.BucketRouteIndex), query, maxCandidates)
+			return err
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func matchingMostSpecificIPIDsForTest(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint64, error) {
+	bits := 128
+	if address.Is4() {
+		bits = 32
+	}
+	cursor := index.Cursor()
+	var seek [boltstore.IndexKeySize]byte
+	for length := bits; length >= 0; length-- {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
+		base := boltstore.PutPrefixKey(seek[:], netip.PrefixFrom(address, length))
+		ids := make([]uint64, 0)
+		for key, _ := cursor.Seek(seek[:]); len(key) == boltstore.IndexKeySize && bytes.Equal(key[:boltstore.PrefixKeySize], base); key, _ = cursor.Next() {
+			id, _ := boltstore.IndexID(key)
+			ids = append(ids, id)
+			if limit > 0 && len(ids) == limit {
+				break
+			}
+		}
+		if len(ids) > 0 {
+			return ids, nil
+		}
+	}
+	return nil, nil
+}
+
 type testingTB interface {
 	Helper()
 	TempDir() string
@@ -205,7 +340,7 @@ func testBboltRepository(tb testingTB) *BboltRepository {
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if stats.Allocations != 2 || stats.Routes != 2 || stats.Geofeeds != 1 || stats.Autnums != 1 {
+	if stats.Allocations != 2 || stats.Routes != 2 || stats.Geofeeds != 1 || stats.Autnums != 1 || stats.RouteLPMNodes == 0 || stats.RouteLPMIDs != stats.Routes || stats.RouteLPMBytes == 0 {
 		tb.Fatal("unexpected build stats: ", stats)
 	}
 	repository, err := NewBboltRepository(path)

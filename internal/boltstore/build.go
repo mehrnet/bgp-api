@@ -35,6 +35,7 @@ type BuildStats struct {
 	Allocations, Routes, Geofeeds, Autnums                     uint64
 	AllocationIndex, RouteIndex, GeofeedIndex                  uint64
 	AllocationRangeIndex, RouteRangeIndex, MaterializedSummary uint64
+	RouteLPMNodes, RouteLPMIDs, RouteLPMBytes                  uint64
 }
 
 type summaryAccumulator struct {
@@ -331,6 +332,23 @@ func (build *builder) autnums(ctx context.Context, path string) error {
 }
 
 func (build *builder) writeDerived(ctx context.Context) error {
+	if err := build.writeASNRoutes(ctx); err != nil {
+		return err
+	}
+	build.asnRoutes = nil
+	runtime.GC()
+	for _, version := range []uint8{4, 6} {
+		if err := build.writeRouteLPM(ctx, version); err != nil {
+			return err
+		}
+		runtime.GC()
+	}
+	return build.db.Update(func(tx *bbolt.Tx) error {
+		return build.writeMaterializedSummaries(ctx, tx.Bucket(BucketRangeSummaries))
+	})
+}
+
+func (build *builder) writeASNRoutes(ctx context.Context) error {
 	return build.db.Update(func(tx *bbolt.Tx) error {
 		asnBucket := tx.Bucket(BucketASNRoutes)
 		asns := make([]uint32, 0, len(build.asnRoutes))
@@ -346,8 +364,85 @@ func (build *builder) writeDerived(ctx context.Context) error {
 				return err
 			}
 		}
-		return build.writeMaterializedSummaries(ctx, tx.Bucket(BucketRangeSummaries))
+		return nil
 	})
+}
+
+func (build *builder) writeRouteLPM(ctx context.Context, version uint8) error {
+	lpm := newRouteLPMBuilder(version)
+	err := build.db.View(func(tx *bbolt.Tx) error {
+		index := tx.Bucket(BucketRouteIndex)
+		if index == nil {
+			return errors.New("route prefix index bucket is missing")
+		}
+		cursor := index.Cursor()
+		seek := []byte{version}
+		var currentPrefix [PrefixKeySize]byte
+		var ids []uint64
+		havePrefix := false
+		flush := func() error {
+			if !havePrefix {
+				return nil
+			}
+			prefix, ok := prefixFromRouteIndexKey(currentPrefix[:])
+			if !ok {
+				return errors.New("invalid route prefix index key")
+			}
+			if err := lpm.Insert(prefix, ids); err != nil {
+				return err
+			}
+			ids = nil
+			havePrefix = false
+			return nil
+		}
+		for key, _ := cursor.Seek(seek); len(key) == IndexKeySize && key[0] == version; key, _ = cursor.Next() {
+			if err := contextError(ctx); err != nil {
+				return err
+			}
+			if !havePrefix || !bytes.Equal(key[:PrefixKeySize], currentPrefix[:]) {
+				if err := flush(); err != nil {
+					return err
+				}
+				copy(currentPrefix[:], key[:PrefixKeySize])
+				havePrefix = true
+			}
+			id, ok := IndexID(key)
+			if !ok {
+				return errors.New("invalid route ID index key")
+			}
+			ids = append(ids, id)
+		}
+		return flush()
+	})
+	if err != nil {
+		return err
+	}
+	encoded, stats, err := lpm.Encode()
+	if err != nil {
+		return err
+	}
+	if err := build.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket(BucketRouteLPM).Put(RouteLPMKey(version), encoded)
+	}); err != nil {
+		return err
+	}
+	build.stats.RouteLPMNodes += stats.Nodes
+	build.stats.RouteLPMIDs += stats.IDs
+	build.stats.RouteLPMBytes += stats.Bytes
+	return nil
+}
+
+func prefixFromRouteIndexKey(key []byte) (netip.Prefix, bool) {
+	if len(key) != PrefixKeySize || (key[0] != 4 && key[0] != 6) {
+		return netip.Prefix{}, false
+	}
+	version, bits := int(key[0]), int(key[17])
+	if (version == 4 && bits > 32) || (version == 6 && bits > 128) {
+		return netip.Prefix{}, false
+	}
+	var address Address
+	copy(address[:], key[1:17])
+	return netip.PrefixFrom(address.Addr(version), bits).Masked(), true
 }
 
 func (build *builder) collectSummary(start, end Address, version int, route bool, value string) {

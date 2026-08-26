@@ -105,9 +105,13 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.P
 			}
 			allocations = append(allocations, record)
 		}
-		routeIDs, err := matchingMostSpecificIPIDs(ctx, tx.Bucket(boltstore.BucketRouteIndex), address, maxCandidates)
+		routeLPM := tx.Bucket(boltstore.BucketRouteLPM).Get(boltstore.RouteLPMKey(uint8(ip.Version)))
+		routeIDs, err := boltstore.LookupRouteLPM(routeLPM, address)
 		if err != nil {
 			return err
+		}
+		if len(routeIDs) > maxCandidates {
+			routeIDs = routeIDs[:maxCandidates]
 		}
 		for _, id := range routeIDs {
 			record, err := routeLookupByID(tx, id)
@@ -830,36 +834,6 @@ func matchingIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr,
 		}
 	}
 	return ids, nil
-}
-
-// matchingMostSpecificIPIDs returns all records at the longest prefix that
-// contains address. The compact response needs only those route objects;
-// details=full deliberately uses matchingIPIDs to retain every ancestor.
-func matchingMostSpecificIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint64, error) {
-	bits := 128
-	if address.Is4() {
-		bits = 32
-	}
-	cursor := index.Cursor()
-	var seek [boltstore.IndexKeySize]byte
-	for length := bits; length >= 0; length-- {
-		if err := contextError(ctx); err != nil {
-			return nil, err
-		}
-		base := boltstore.PutPrefixKey(seek[:], netip.PrefixFrom(address, length))
-		ids := make([]uint64, 0)
-		for key, _ := cursor.Seek(seek[:]); len(key) == boltstore.IndexKeySize && bytes.Equal(key[:boltstore.PrefixKeySize], base); key, _ = cursor.Next() {
-			id, _ := boltstore.IndexID(key)
-			ids = append(ids, id)
-			if limit > 0 && len(ids) == limit {
-				break
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-	return nil, nil
 }
 
 func overlapIDs(ctx context.Context, index *bbolt.Bucket, startValue, endValue ipkey.Parsed, after int64) ([]uint64, error) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install, update, or remove the digest-pinned MehrNet BGP API Docker deployment.
+# Install, update, or remove a MehrNet BGP API deployment.
 set -Eeuo pipefail
 
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
@@ -679,9 +679,9 @@ install_docker
 if [ "${BGP_API_SKIP_DISK_CHECK:-0}" != 1 ]; then
   docker_root="$(docker info --format '{{.DockerRootDir}}')"
   available_kib="$(df -Pk "$docker_root" | awk 'NR == 2 { print $4 }')"
-  required_kib=$((12 * 1024 * 1024))
+  required_kib=$((14 * 1024 * 1024))
   [ "$available_kib" -ge "$required_kib" ] || \
-    die "Docker needs at least 12 GiB free for the pre-indexed database image"
+    die "Docker needs at least 14 GiB free for the compressed image and database volume"
 fi
 
 step "Resolving the latest verified release"

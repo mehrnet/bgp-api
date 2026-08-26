@@ -2,15 +2,21 @@ services:
   postgres:
     image: ${BGP_API_POSTGRES_IMAGE:?set BGP_API_POSTGRES_IMAGE to a digest-pinned release image}
     restart: unless-stopped
+    read_only: true
     environment:
       POSTGRES_DB: bgp_api
+    volumes:
+      - postgres-data:/var/lib/postgresql/mehrnet-data
+    tmpfs:
+      - /var/run/postgresql
+      - /tmp
     networks:
       - private
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d bgp_api"]
       interval: 10s
       timeout: 5s
-      retries: 12
+      retries: 60
 
   api:
     image: ${BGP_API_IMAGE:?set BGP_API_IMAGE to a digest-pinned release image}
@@ -51,3 +57,6 @@ networks:
     internal: true
   edge:
   egress:
+
+volumes:
+  postgres-data:

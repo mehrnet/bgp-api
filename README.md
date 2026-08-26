@@ -14,7 +14,7 @@ The unattended installer has two explicit deployment modes:
 
 | Mode | Bootstrap | Hosts | Free space | Best use |
 | --- | --- | --- | --- | --- |
-| `docker` | Pre-indexed PostgreSQL image | Linux amd64 | 12 GiB | Fastest installation and simplest operation |
+| `docker` | Pre-indexed PostgreSQL image | Linux amd64 | 14 GiB | Fastest installation and simplest operation |
 | `bare` | Logical snapshot restored into host PostgreSQL | Linux amd64/arm64 with systemd | 18 GiB | Host-managed PostgreSQL and native systemd service |
 
 Docker mode is the default, but production commands should include `--mode`
@@ -130,9 +130,9 @@ sudo docker compose --env-file .env -f docker-compose.yml restart api
 journalctl -u bgp-api -f
 ```
 
-Do not use `docker compose down` or remove the PostgreSQL container. Its
-writable layer contains the patches applied after the original pre-indexed
-image was published.
+The PostgreSQL data and applied patches live in the `postgres-data` volume.
+Ordinary `docker compose down` and container recreation preserve it; adding
+`--volumes` permanently removes the database.
 
 ## Run From Source
 
@@ -238,11 +238,10 @@ sudo systemctl enable --now bgp-api-postgres-sync.timer
 
 Docker is the fast bootstrap route. Each release publishes digest-pinned amd64
 API, updater, and pre-indexed PostgreSQL images in
-`docker-deployment-manifest.json`. PostgreSQL starts directly from the
-pre-indexed data directory in its pinned image, so bootstrap does not need a
-second full-database volume copy. This route is suitable for small disks, but
-the PostgreSQL container must not be removed: its writable layer holds logical
-patches applied after the image's initial release.
+`docker-deployment-manifest.json`. The PostgreSQL image stores its pre-indexed
+snapshot as a compressed archive and extracts it once into the `postgres-data`
+volume. Keeping the live database outside OverlayFS prevents read access times
+and ordinary database writes from copying multi-gigabyte image-layer files.
 It is intentionally an amd64 image because PostgreSQL data directories are
 architecture-specific. The Dockerfiles also pin their Debian/Go/PostgreSQL base
 image digests, so rebuilds are reproducible. The host still supplies the Linux
@@ -279,10 +278,10 @@ CRON_TZ=UTC
 0 6 * * * cd /srv/bgp-api && ./scripts/sync-docker.sh >> /var/log/bgp-api-docker-sync.log 2>&1
 ```
 
-Use `docker compose stop` or `docker compose restart` for this stack. Do not
-run `docker compose down`, `docker compose rm postgres`, or force-recreate the
-PostgreSQL service: those discard patches and require another bootstrap from
-the pre-indexed image. Use the bare-metal deployment when a separately managed
+Use `docker compose stop`, `docker compose restart`, or `docker compose down`
+for this stack. The named volume survives container recreation. Do not run
+`docker compose down --volumes` or remove `postgres-data` unless a clean
+bootstrap is intended. Use the bare-metal deployment when a separately managed
 PostgreSQL data directory is required.
 
 ## Cloudflare

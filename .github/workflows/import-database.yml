@@ -268,8 +268,13 @@ jobs:
         run: |
           docker exec bgp-postgres-build psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -c "CHECKPOINT;"
+          origin_count="$(docker exec bgp-postgres-build psql -U postgres -d postgres -At \
+            -c 'SELECT count(*) FROM pg_replication_origin_status;')"
+          [ "$origin_count" -eq 0 ] || {
+            echo "physical image cannot discard active replication origins" >&2
+            exit 1
+          }
           docker exec bgp-postgres-build sh -c 'du -sh "$PGDATA"; du -sh "$PGDATA/pg_wal"'
-          docker exec --user root bgp-postgres-build chmod -R a+rX /var/lib/postgresql/mehrnet-data
           docker stop --time 120 bgp-postgres-build || {
             state="$(docker inspect --format '{{.State.Status}}' bgp-postgres-build 2>/dev/null || true)"
             if [ "$state" != "exited" ] && [ "$state" != "dead" ]; then
@@ -284,6 +289,37 @@ jobs:
             find build/pgdata -maxdepth 2 -type f -printf '%p %s bytes\n' | head -40 >&2
             exit 1
           }
+          # An empty checkpoint file makes PostgreSQL panic instead of treating
+          # replication origins as unused. This dataset never creates origins.
+          if [ -e build/pgdata/pg_logical/replorigin_checkpoint ] && \
+              [ ! -s build/pgdata/pg_logical/replorigin_checkpoint ]; then
+            rm build/pgdata/pg_logical/replorigin_checkpoint
+          fi
+
+          docker run --detach --name bgp-postgres-runtime-check \
+            --env PGDATA=/var/lib/postgresql/mehrnet-data \
+            --volume "$PWD/build/pgdata:/var/lib/postgresql/mehrnet-data" \
+            postgres:15.13-bookworm@sha256:d1f651d3a24650cd68a4e7fcf4eef7bd772c2ec965c3563f36b91c1fecddac76
+          runtime_ready=false
+          for _ in $(seq 1 60); do
+            if docker exec bgp-postgres-runtime-check pg_isready -U postgres -d bgp_api >/dev/null 2>&1; then
+              runtime_ready=true
+              break
+            fi
+            sleep 1
+          done
+          [ "$runtime_ready" = true ] || {
+            docker logs bgp-postgres-runtime-check >&2
+            exit 1
+          }
+          docker exec bgp-postgres-runtime-check psql -U postgres -d bgp_api -v ON_ERROR_STOP=1 \
+            -c 'SELECT release_tag FROM public.bgp_api_dataset WHERE singleton;'
+          docker stop --time 120 bgp-postgres-runtime-check
+          docker rm bgp-postgres-runtime-check
+          docker run --rm --user root \
+            --volume "$PWD/build/pgdata:/var/lib/postgresql/mehrnet-data" \
+            postgres:15.13-bookworm@sha256:d1f651d3a24650cd68a4e7fcf4eef7bd772c2ec965c3563f36b91c1fecddac76 \
+            chmod -R a+rX /var/lib/postgresql/mehrnet-data
           cp docker/postgres/Dockerfile.direct build/Dockerfile
       - name: Set up Docker Buildx
         id: buildx

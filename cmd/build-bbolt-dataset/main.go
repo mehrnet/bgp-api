@@ -25,7 +25,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("built %s: allocations=%d routes=%d geofeeds=%d autnums=%d allocation_index=%d route_index=%d geofeed_index=%d\n",
+	fmt.Printf("built %s: allocations=%d routes=%d geofeeds=%d autnums=%d allocation_index=%d route_index=%d geofeed_index=%d allocation_range_index=%d route_range_index=%d materialized_summaries=%d\n",
 		*output, stats.Allocations, stats.Routes, stats.Geofeeds, stats.Autnums,
-		stats.AllocationIndex, stats.RouteIndex, stats.GeofeedIndex)
+		stats.AllocationIndex, stats.RouteIndex, stats.GeofeedIndex,
+		stats.AllocationRangeIndex, stats.RouteRangeIndex, stats.MaterializedSummary)
 }

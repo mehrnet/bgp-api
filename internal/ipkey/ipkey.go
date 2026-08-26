@@ -42,10 +42,9 @@ type ParsedRange struct {
 	AddressCount string
 }
 
-// SummaryPrefixKeys returns the fixed aggregation buckets needed for a
-// canonical IPv4 range no broader than /16. The generated dataset contains
-// summaries at /0, /8, and /16, keeping an arbitrary supported range bounded
-// to 128 bucket reads.
+// SummaryPrefixKeys returns a canonical IPv4 summary prefix from /0 through
+// /16. The generated bbolt dataset materializes every prefix in that interval,
+// so a broad range summary is one lookup.
 func SummaryPrefixKeys(value ParsedRange) ([]string, bool) {
 	if value.Version != 4 {
 		return nil, false
@@ -54,24 +53,7 @@ func SummaryPrefixKeys(value ParsedRange) ([]string, bool) {
 	if !ok || prefix.PrefixLength > 16 {
 		return nil, false
 	}
-	if prefix.PrefixLength == 0 || prefix.PrefixLength == 8 || prefix.PrefixLength == 16 {
-		return []string{prefix.Canonical}, true
-	}
-
-	bucketLength := 8
-	if prefix.PrefixLength > 8 {
-		bucketLength = 16
-	}
-	start := uint32(addressValue(prefix.Start).Uint64())
-	count := 1 << uint(bucketLength-prefix.PrefixLength)
-	step := uint32(1) << uint(32-bucketLength)
-	keys := make([]string, 0, count)
-	for index := 0; index < count; index++ {
-		address := netip.AddrFrom4([4]byte{byte(start >> 24), byte(start >> 16), byte(start >> 8), byte(start)})
-		keys = append(keys, netip.PrefixFrom(address, bucketLength).String())
-		start += step
-	}
-	return keys, true
+	return []string{prefix.Canonical}, true
 }
 
 // PrefixForRange returns a CIDR only when the range's bounds exactly match

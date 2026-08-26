@@ -77,12 +77,15 @@ covering allocation record, and cursor-paginated registered RPSL route
 objects. `GET /v1/range?start=:ip&end=:ip` returns overlapping allocation
 records by default; use `kind=routes` for overlapping route objects. A
 canonical IPv4 range from `/0` through `/16` returns `mode: "summary"` from
-the generated `range_summaries` dataset instead. These requests are composed
-from at most 128 fixed `/8` or `/16` buckets, so broad ranges do not trigger an
-unbounded overlap scan. The summary's allocation and route figures are counts
-of overlapping source records, and its country/ASN facets use the same count;
-they are not unique-address coverage percentages. Other ranges return
-`mode: "records"` and cursor-paginated objects.
+the generated `range_summaries` dataset instead. Every canonical prefix in that
+interval is materialized by the producer, so each broad summary is a single
+indexed dataset read and does not trigger an overlap scan. The summary's
+allocation and route figures aggregate the source-record buckets contributing
+to that prefix. A source range spanning multiple buckets may therefore
+contribute more than once; the country/ASN facets use the same aggregation and
+are not unique-address coverage percentages. Other ranges return
+`mode: "records"` and cursor-paginated objects. Range cursors are opaque and
+must be passed unchanged to the same range request.
 `GET /v1/asn?query=:asn` returns an `aut-num` object and the ASN's registered route
 objects. Add `page=:number` to receive numbered pagination with `routes.page`,
 `routes.total_pages`, and `routes.total_items`; `page` and cursor pagination

@@ -64,23 +64,22 @@ func TestParseRangeCalculatesAddressCount(t *testing.T) {
 	}
 }
 
-func TestSummaryPrefixKeysUseBoundedIPv4Buckets(t *testing.T) {
+func TestSummaryPrefixKeysUseMaterializedIPv4Prefixes(t *testing.T) {
 	for _, test := range []struct {
 		start string
 		end   string
-		first string
-		count int
+		key   string
 	}{
-		{"80.0.0.0", "80.255.255.255", "80.0.0.0/8", 1},
-		{"80.0.0.0", "81.255.255.255", "80.0.0.0/8", 2},
-		{"80.0.0.0", "80.31.255.255", "80.0.0.0/16", 32},
+		{"80.0.0.0", "80.255.255.255", "80.0.0.0/8"},
+		{"80.0.0.0", "81.255.255.255", "80.0.0.0/7"},
+		{"80.0.0.0", "80.31.255.255", "80.0.0.0/11"},
 	} {
 		rangeValue, ok := ParseRange(test.start, test.end)
 		if !ok {
 			t.Fatalf("parse range %s-%s", test.start, test.end)
 		}
 		keys, ok := SummaryPrefixKeys(rangeValue)
-		if !ok || len(keys) != test.count || keys[0] != test.first {
+		if !ok || len(keys) != 1 || keys[0] != test.key {
 			t.Fatalf("summary keys for %s-%s = %#v, %v", test.start, test.end, keys, ok)
 		}
 	}

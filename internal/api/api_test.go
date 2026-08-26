@@ -38,7 +38,7 @@ func (broadQueryFakeRepository) LookupPrefix(context.Context, ipkey.ParsedPrefix
 	return nil, errBboltQueryTooBroad
 }
 
-func (broadQueryFakeRepository) LookupRange(context.Context, ipkey.ParsedRange, RangeKind, Page) (*RangeResponse, error) {
+func (broadQueryFakeRepository) LookupRange(context.Context, ipkey.ParsedRange, RangeKind, RangePage) (*RangeResponse, error) {
 	return nil, errBboltQueryTooBroad
 }
 
@@ -49,7 +49,7 @@ func (resourceFakeRepository) LookupPrefix(_ context.Context, prefix ipkey.Parse
 	}, nil
 }
 
-func (resourceFakeRepository) LookupRange(_ context.Context, rangeValue ipkey.ParsedRange, kind RangeKind, _ Page) (*RangeResponse, error) {
+func (resourceFakeRepository) LookupRange(_ context.Context, rangeValue ipkey.ParsedRange, kind RangeKind, _ RangePage) (*RangeResponse, error) {
 	return &RangeResponse{Range: RangeDescriptor{StartIP: rangeValue.Start.Canonical, EndIP: rangeValue.End.Canonical, Version: rangeValue.Version, AddressCount: rangeValue.AddressCount}, Kind: kind, Mode: "records", Allocations: []AllocationObject{}}, nil
 }
 

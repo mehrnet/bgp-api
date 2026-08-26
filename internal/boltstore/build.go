@@ -32,8 +32,9 @@ type BuildOptions struct {
 }
 
 type BuildStats struct {
-	Allocations, Routes, Geofeeds, Autnums    uint64
-	AllocationIndex, RouteIndex, GeofeedIndex uint64
+	Allocations, Routes, Geofeeds, Autnums                     uint64
+	AllocationIndex, RouteIndex, GeofeedIndex                  uint64
+	AllocationRangeIndex, RouteRangeIndex, MaterializedSummary uint64
 }
 
 type summaryAccumulator struct {
@@ -41,11 +42,16 @@ type summaryAccumulator struct {
 	countries, asns     map[string]uint64
 }
 
+type summaryKey struct {
+	network uint32
+	length  uint8
+}
+
 type builder struct {
 	db        *bbolt.DB
 	stats     BuildStats
 	asnRoutes map[uint32][]uint64
-	summaries map[string]*summaryAccumulator
+	summaries map[summaryKey]*summaryAccumulator
 }
 
 func Build(ctx context.Context, options BuildOptions) (BuildStats, error) {
@@ -77,7 +83,7 @@ func Build(ctx context.Context, options BuildOptions) (BuildStats, error) {
 	if err != nil {
 		return BuildStats{}, err
 	}
-	build := &builder{db: db, asnRoutes: make(map[uint32][]uint64), summaries: make(map[string]*summaryAccumulator)}
+	build := &builder{db: db, asnRoutes: make(map[uint32][]uint64), summaries: make(map[summaryKey]*summaryAccumulator)}
 	failed := true
 	defer func() {
 		_ = db.Close()
@@ -181,7 +187,7 @@ func (build *builder) initialize(options BuildOptions) error {
 func (build *builder) allocations(ctx context.Context, path string) error {
 	return forEachCSVBatch(ctx, path, func(rows [][]string) error {
 		return build.db.Update(func(tx *bbolt.Tx) error {
-			objects, index := tx.Bucket(BucketAllocations), tx.Bucket(BucketAllocationIndex)
+			objects, index, rangeIndex := tx.Bucket(BucketAllocations), tx.Bucket(BucketAllocationIndex), tx.Bucket(BucketAllocationRange)
 			for _, row := range rows {
 				if len(row) < 6 {
 					continue
@@ -195,6 +201,10 @@ func (build *builder) allocations(ctx context.Context, path string) error {
 				if err := objects.Put(IDKey(id), EncodeAllocation(record)); err != nil {
 					return err
 				}
+				if err := rangeIndex.Put(RangeIndexKey(version, start, end, id), []byte{0}); err != nil {
+					return err
+				}
+				build.stats.AllocationRangeIndex++
 				prefixes, err := rangePrefixes(start, end, int(version))
 				if err != nil {
 					return err
@@ -216,7 +226,10 @@ func (build *builder) allocations(ctx context.Context, path string) error {
 func (build *builder) routes(ctx context.Context, path string) error {
 	return forEachCSVBatch(ctx, path, func(rows [][]string) error {
 		return build.db.Update(func(tx *bbolt.Tx) error {
-			objects, index := tx.Bucket(BucketRoutes), tx.Bucket(BucketRouteIndex)
+			objects, index, rangeIndex := tx.Bucket(BucketRoutes), tx.Bucket(BucketRouteIndex), tx.Bucket(BucketRouteRange)
+			if rangeIndex == nil {
+				return errors.New("route range index bucket is missing")
+			}
 			for _, row := range rows {
 				if len(row) < 5 {
 					continue
@@ -247,8 +260,12 @@ func (build *builder) routes(ctx context.Context, path string) error {
 					build.asnRoutes[asn] = append(build.asnRoutes[asn], id)
 				}
 				start, end := prefixRange(prefix)
+				if err := rangeIndex.Put(RangeIndexKey(version, start, end, id), []byte{0}); err != nil {
+					return err
+				}
 				build.collectSummary(start, end, int(version), true, record.OriginASN)
 				build.stats.RouteIndex++
+				build.stats.RouteRangeIndex++
 				build.stats.Routes = id
 			}
 			return nil
@@ -329,24 +346,7 @@ func (build *builder) writeDerived(ctx context.Context) error {
 				return err
 			}
 		}
-		summaryBucket := tx.Bucket(BucketRangeSummaries)
-		keys := make([]string, 0, len(build.summaries))
-		for key := range build.summaries {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if err := contextError(ctx); err != nil {
-				return err
-			}
-			prefix := netip.MustParsePrefix(key)
-			item := build.summaries[key]
-			value := RangeSummary{PrefixLength: uint8(prefix.Bits()), AllocationRecords: item.allocations, Routes: item.routes, Countries: rankedFacets(item.countries), ASNs: rankedFacets(item.asns)}
-			if err := summaryBucket.Put(PrefixKey(prefix), EncodeSummary(value)); err != nil {
-				return err
-			}
-		}
-		return nil
+		return build.writeMaterializedSummaries(ctx, tx.Bucket(BucketRangeSummaries))
 	})
 }
 
@@ -356,29 +356,116 @@ func (build *builder) collectSummary(start, end Address, version int, route bool
 	}
 	startValue := binary.BigEndian.Uint32(start[12:])
 	endValue := binary.BigEndian.Uint32(end[12:])
+	value = strings.ToUpper(strings.TrimSpace(value))
 	for _, length := range []uint{0, 8, 16} {
 		first, last := uint64(startValue)>>uint(32-length), uint64(endValue)>>uint(32-length)
 		for bucket := first; bucket <= last; bucket++ {
-			network := uint32(bucket << uint(32-length))
-			address := netip.AddrFrom4([4]byte{byte(network >> 24), byte(network >> 16), byte(network >> 8), byte(network)})
-			key := netip.PrefixFrom(address, int(length)).String()
+			network := uint32(bucket)
+			key := summaryKey{network: network, length: uint8(length)}
 			item := build.summaries[key]
 			if item == nil {
-				item = &summaryAccumulator{countries: make(map[string]uint64), asns: make(map[string]uint64)}
+				item = &summaryAccumulator{}
 				build.summaries[key] = item
 			}
-			value = strings.ToUpper(strings.TrimSpace(value))
 			if route {
 				item.routes++
 				if value != "" {
+					if item.asns == nil {
+						item.asns = make(map[string]uint64)
+					}
 					item.asns[value]++
 				}
 			} else {
 				item.allocations++
 				if value != "" {
+					if item.countries == nil {
+						item.countries = make(map[string]uint64)
+					}
 					item.countries[value]++
 				}
 			}
+		}
+	}
+}
+
+// writeMaterializedSummaries stores one summary for every canonical IPv4
+// prefix through /16. Existing /0, /8, and /16 accumulators remain the source
+// of truth; intermediate summaries preserve the former fixed-bucket
+// aggregation, including its non-unique source-record counts and top-ten
+// facets, without requiring runtime merging.
+func (build *builder) writeMaterializedSummaries(ctx context.Context, bucket *bbolt.Bucket) error {
+	return build.writeMaterializedSummary(ctx, bucket, 0, 0)
+}
+
+// writeMaterializedSummary visits the IPv4 prefix tree in the bytewise order
+// used by bbolt keys. Writing ordered keys avoids repeated B+tree page splits
+// while keeping the database immutable and compactable.
+func (build *builder) writeMaterializedSummary(ctx context.Context, bucket *bbolt.Bucket, network uint32, length int) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
+	prefix := summaryPrefix(network, length)
+	if err := bucket.Put(PrefixKey(prefix), EncodeSummary(build.summaryForPrefix(network, length))); err != nil {
+		return err
+	}
+	build.stats.MaterializedSummary++
+	if length == 16 {
+		return nil
+	}
+	childNetwork := network << 1
+	if err := build.writeMaterializedSummary(ctx, bucket, childNetwork, length+1); err != nil {
+		return err
+	}
+	return build.writeMaterializedSummary(ctx, bucket, childNetwork|1, length+1)
+}
+
+func (build *builder) summaryForPrefix(network uint32, length int) RangeSummary {
+	if length == 0 || length == 8 || length == 16 {
+		return summaryValue(build.summaries[summaryKey{network: network, length: uint8(length)}], length)
+	}
+	childLength := 8
+	if length > 8 {
+		childLength = 16
+	}
+	childCount := uint32(1) << uint(childLength-length)
+	first := network << uint(childLength-length)
+	merged := summaryAccumulator{}
+	for child := first; child < first+childCount; child++ {
+		childValue := summaryValue(build.summaries[summaryKey{network: child, length: uint8(childLength)}], childLength)
+		mergeSummary(&merged, childValue)
+	}
+	return summaryValue(&merged, length)
+}
+
+func summaryPrefix(network uint32, length int) netip.Prefix {
+	address := uint32(network << uint(32-length))
+	return netip.PrefixFrom(netip.AddrFrom4([4]byte{byte(address >> 24), byte(address >> 16), byte(address >> 8), byte(address)}), length)
+}
+
+func summaryValue(item *summaryAccumulator, length int) RangeSummary {
+	if item == nil {
+		return RangeSummary{PrefixLength: uint8(length)}
+	}
+	return RangeSummary{PrefixLength: uint8(length), AllocationRecords: item.allocations, Routes: item.routes, Countries: rankedFacets(item.countries), ASNs: rankedFacets(item.asns)}
+}
+
+func mergeSummary(destination *summaryAccumulator, source RangeSummary) {
+	destination.allocations += source.AllocationRecords
+	destination.routes += source.Routes
+	if len(source.Countries) > 0 {
+		if destination.countries == nil {
+			destination.countries = make(map[string]uint64, len(source.Countries))
+		}
+		for _, facet := range source.Countries {
+			destination.countries[facet.Value] += facet.Count
+		}
+	}
+	if len(source.ASNs) > 0 {
+		if destination.asns == nil {
+			destination.asns = make(map[string]uint64, len(source.ASNs))
+		}
+		for _, facet := range source.ASNs {
+			destination.asns[facet.Value] += facet.Count
 		}
 	}
 }

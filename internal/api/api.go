@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"math/big"
 	"net"
 	"net/http"
 	"net/netip"
@@ -25,7 +24,7 @@ type MetadataRepository interface {
 
 type ResourceRepository interface {
 	LookupPrefix(context.Context, ipkey.ParsedPrefix, Page) (*PrefixResponse, error)
-	LookupRange(context.Context, ipkey.ParsedRange, RangeKind, Page) (*RangeResponse, error)
+	LookupRange(context.Context, ipkey.ParsedRange, RangeKind, RangePage) (*RangeResponse, error)
 	LookupRangeSummary(context.Context, ipkey.ParsedRange, RangeKind) (*RangeResponse, error)
 	LookupASN(context.Context, uint32, Page) (*ASNResponse, error)
 }
@@ -35,6 +34,13 @@ type Page struct {
 	Limit    int
 	Number   int
 	Numbered bool
+}
+
+// RangePage keeps its cursor opaque so the immutable producer index can
+// evolve independently of the API response schema.
+type RangePage struct {
+	Cursor string
+	Limit  int
 }
 
 type RangeKind string
@@ -276,6 +282,23 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 	writeJSON(writer, http.StatusOK, response)
 }
 
+func requestRangePage(writer http.ResponseWriter, request *http.Request) (RangePage, bool) {
+	page := RangePage{Limit: 50, Cursor: request.URL.Query().Get("cursor")}
+	if raw := request.URL.Query().Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 100 {
+			writeError(writer, http.StatusBadRequest, "INVALID_LIMIT", "limit must be between 1 and 100")
+			return RangePage{}, false
+		}
+		page.Limit = limit
+	}
+	if len(page.Cursor) > 256 {
+		writeError(writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor is invalid")
+		return RangePage{}, false
+	}
+	return page, true
+}
+
 func lookupRange(writer http.ResponseWriter, request *http.Request, repository Repository) {
 	resources, ok := resourceRepository(writer, repository)
 	if !ok {
@@ -295,7 +318,7 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 		writeError(writer, http.StatusBadRequest, "INVALID_RANGE_KIND", "kind must be allocations or routes")
 		return
 	}
-	page, valid := requestPage(writer, request)
+	page, valid := requestRangePage(writer, request)
 	if !valid {
 		return
 	}
@@ -307,6 +330,10 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 		response, err = resources.LookupRange(request.Context(), rangeValue, kind, page)
 	}
 	if err != nil {
+		if errors.Is(err, errInvalidRangeCursor) {
+			writeError(writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor is invalid for this range lookup")
+			return
+		}
 		if errors.Is(err, errBboltQueryTooBroad) {
 			writeError(writer, http.StatusUnprocessableEntity, "QUERY_TOO_BROAD", "range matches too many source records; use a canonical IPv4 CIDR from /0 through /16 for a generated summary, or request a narrower range")
 			return
@@ -537,143 +564,6 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
-type LookupCandidate struct {
-	StartIPSort    string
-	EndIPSort      string
-	IPVersion      int
-	Registry       nullableString
-	Country        nullableString
-	Netname        nullableString
-	CIDR           nullableString
-	ASN            nullableString
-	Region         nullableString
-	City           nullableString
-	Status         nullableString
-	AllocationDate nullableString
-	Created        nullableString
-	LastModified   nullableString
-	RecordSource   nullableString
-	MntBy          nullableString
-	Org            nullableString
-	AbuseContact   nullableString
-	Description    nullableString
-}
-
-func BuildResponse(ip ipkey.Parsed, allocations, routes, geolocations []LookupCandidate, options LookupOptions) *LookupResponse {
-	allocation := narrowest(allocations)
-	bestRoutes := allNarrowest(routes)
-	geolocation := narrowest(geolocations)
-	if allocation == nil && len(bestRoutes) == 0 && geolocation == nil {
-		return nil
-	}
-
-	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
-	response.Registry = lower(nullable(allocation, func(row LookupCandidate) nullableString { return row.Registry }))
-	response.Network.ASNs = make([]string, 0)
-	for _, route := range bestRoutes {
-		if asn := upper(nullable(&route, func(row LookupCandidate) nullableString { return row.ASN })); asn != nil && !contains(response.Network.ASNs, *asn) {
-			response.Network.ASNs = append(response.Network.ASNs, *asn)
-		}
-	}
-	sortASNs(response.Network.ASNs)
-	if len(response.Network.ASNs) == 1 {
-		response.Network.ASN = &response.Network.ASNs[0]
-		response.Network.ASNumber = asNumber(response.Network.ASN)
-	}
-	if len(bestRoutes) > 0 {
-		route := bestRoutes[0]
-		response.Network.CIDR = nullable(&route, func(row LookupCandidate) nullableString { return row.CIDR })
-		start := ipkey.SortKeyToIP(route.StartIPSort, ip.Version)
-		end := ipkey.SortKeyToIP(route.EndIPSort, ip.Version)
-		response.Network.StartIP, response.Network.EndIP = &start, &end
-	}
-	response.Network.Name = nullable(allocation, func(row LookupCandidate) nullableString { return row.Netname })
-	if len(bestRoutes) > 0 {
-		response.Network.Status = nullable(&bestRoutes[0], func(row LookupCandidate) nullableString { return row.Status })
-		response.Network.AbuseContact = nullable(&bestRoutes[0], func(row LookupCandidate) nullableString { return row.AbuseContact })
-	}
-
-	if allocation != nil {
-		start := ipkey.SortKeyToIP(allocation.StartIPSort, ip.Version)
-		end := ipkey.SortKeyToIP(allocation.EndIPSort, ip.Version)
-		response.Allocation.StartIP, response.Allocation.EndIP = &start, &end
-		response.Allocation.Registry = lower(nullable(allocation, func(row LookupCandidate) nullableString { return row.Registry }))
-		response.Allocation.CountryRaw = upper(nullable(allocation, func(row LookupCandidate) nullableString { return row.Country }))
-		response.Allocation.CountryCode = countryCode(response.Allocation.CountryRaw)
-		response.Allocation.Name = nullable(allocation, func(row LookupCandidate) nullableString { return row.Netname })
-		response.Allocation.AllocationDate = nullable(allocation, func(row LookupCandidate) nullableString { return row.AllocationDate })
-		response.Allocation.Status = nullable(allocation, func(row LookupCandidate) nullableString { return row.Status })
-		response.Allocation.AbuseContact = nullable(allocation, func(row LookupCandidate) nullableString { return row.AbuseContact })
-		response.AllocationDate = response.Allocation.AllocationDate
-		response.AllocationStatus = response.Allocation.Status
-	}
-	if geolocation != nil {
-		response.Location.CountryCode = countryCode(upper(nullable(geolocation, func(row LookupCandidate) nullableString { return row.Country })))
-		response.Location.Region = nullable(geolocation, func(row LookupCandidate) nullableString { return row.Region })
-		response.Location.City = nullable(geolocation, func(row LookupCandidate) nullableString { return row.City })
-	}
-	if response.Location.CountryCode == nil {
-		response.Location.CountryCode = response.Allocation.CountryCode
-	}
-	response.Sources.Allocation = allocation != nil
-	response.Sources.Route = len(bestRoutes) > 0
-	response.Sources.Geofeed = geolocation != nil
-	if options.Details == LookupDetailsFull {
-		response.Details = &LookupDetails{
-			Allocations: detailRecords(allocations, ip.Version),
-			Routes:      detailRecords(routes, ip.Version),
-			Geofeeds:    detailRecords(geolocations, ip.Version),
-		}
-	}
-	return response
-}
-
-func detailRecords(candidates []LookupCandidate, version int) []LookupDetailRecord {
-	if len(candidates) == 0 {
-		return nil
-	}
-	records := make([]LookupDetailRecord, 0, len(candidates))
-	for _, candidate := range candidates {
-		record := LookupDetailRecord{
-			StartIP:        ipkey.SortKeyToIP(candidate.StartIPSort, version),
-			EndIP:          ipkey.SortKeyToIP(candidate.EndIPSort, version),
-			Version:        candidate.IPVersion,
-			Registry:       lower(candidate.Registry),
-			CountryRaw:     upper(candidate.Country),
-			Name:           present(candidate.Netname),
-			CIDR:           present(candidate.CIDR),
-			ASN:            upper(candidate.ASN),
-			Region:         present(candidate.Region),
-			City:           present(candidate.City),
-			Status:         present(candidate.Status),
-			AllocationDate: present(candidate.AllocationDate),
-			Created:        present(candidate.Created),
-			LastModified:   present(candidate.LastModified),
-			Source:         present(candidate.RecordSource),
-			Maintainers:    present(candidate.MntBy),
-			Organization:   present(candidate.Org),
-			AbuseContact:   present(candidate.AbuseContact),
-			Description:    present(candidate.Description),
-		}
-		record.CountryCode = countryCode(record.CountryRaw)
-		record.ASNumber = asNumber(record.ASN)
-		records = append(records, record)
-	}
-	return records
-}
-
-func nullable(candidate *LookupCandidate, selectValue func(LookupCandidate) nullableString) nullableString {
-	if candidate == nil {
-		return nil
-	}
-	value := selectValue(*candidate)
-	if value == nil || strings.TrimSpace(*value) == "" {
-		return nil
-	}
-	trimmed := strings.TrimSpace(*value)
-	return &trimmed
-}
-
 func lower(value nullableString) nullableString {
 	value = present(value)
 	if value == nil {
@@ -724,66 +614,4 @@ func asNumber(asn nullableString) *int {
 		return nil
 	}
 	return &number
-}
-
-func contains(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
-	}
-	return false
-}
-
-func sortASNs(values []string) {
-	for index := 1; index < len(values); index++ {
-		for cursor := index; cursor > 0 && asnOrder(values[cursor]) < asnOrder(values[cursor-1]); cursor-- {
-			values[cursor], values[cursor-1] = values[cursor-1], values[cursor]
-		}
-	}
-}
-
-func asnOrder(value string) int {
-	number, err := strconv.Atoi(strings.TrimPrefix(value, "AS"))
-	if err != nil {
-		return 0
-	}
-	return number
-}
-
-func narrowest(candidates []LookupCandidate) *LookupCandidate {
-	if len(candidates) == 0 {
-		return nil
-	}
-	best := candidates[0]
-	for _, candidate := range candidates[1:] {
-		if rangeWidth(candidate).Cmp(rangeWidth(best)) < 0 {
-			best = candidate
-		}
-	}
-	return &best
-}
-
-func allNarrowest(candidates []LookupCandidate) []LookupCandidate {
-	best := narrowest(candidates)
-	if best == nil {
-		return nil
-	}
-	width := rangeWidth(*best)
-	result := make([]LookupCandidate, 0)
-	for _, candidate := range candidates {
-		if rangeWidth(candidate).Cmp(width) == 0 {
-			result = append(result, candidate)
-		}
-	}
-	return result
-}
-
-func rangeWidth(candidate LookupCandidate) *big.Int {
-	start, _ := new(big.Int).SetString(candidate.StartIPSort, 10)
-	end, _ := new(big.Int).SetString(candidate.EndIPSort, 10)
-	if start == nil || end == nil {
-		return big.NewInt(0)
-	}
-	return new(big.Int).Sub(end, start)
 }

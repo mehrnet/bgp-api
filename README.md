@@ -129,13 +129,15 @@ Paginated endpoints accept:
 | Parameter | Applies to | Notes |
 | --- | --- | --- |
 | `limit` | prefix, range, ASN | `1`-`100`; default is server-defined |
-| `cursor` | prefix, range, ASN | Continue the previous result set |
+| `cursor` | prefix, ASN | Continue the previous result set |
+| `cursor` | range | Opaque cursor returned by the preceding range response; pass it unchanged |
 | `page` | ASN | Numbered pagination; do not combine with `cursor` |
 | `details=full` | IP | Include matching allocation, route, and geofeed records |
-| `kind=allocations\|routes\|all` | range | Select range record types |
+| `kind=allocations\|routes` | range | Select range record types |
 
-IPv4 `/0` through `/16` range requests use precomputed summaries. Narrow ranges,
-IPv6 ranges, and non-CIDR ranges return source records with pagination.
+Canonical IPv4 `/0` through `/16` range requests use one precomputed summary per
+prefix. Narrow ranges, IPv6 ranges, and non-CIDR ranges return source records with
+pagination.
 
 Example:
 
@@ -145,7 +147,8 @@ curl -sS 'https://bgp-api.mehrnet.com/v1/asn?query=AS13335&limit=20' | jq
 ```
 
 See [`docs/data-contract.md`](docs/data-contract.md) for stable response objects and
-the complete [`openapi.json`](openapi.json) for generated client documentation.
+the public [OpenAPI document](https://bgp.mehrnet.com/openapi.json) for generated
+client documentation.
 
 ## Configuration
 

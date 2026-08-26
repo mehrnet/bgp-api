@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ type BboltRepository struct {
 }
 
 var errBboltQueryTooBroad = errors.New("bbolt overlap scan limit exceeded")
+var errInvalidRangeCursor = errors.New("invalid range cursor")
 
 const (
 	maxCandidates          = 64
@@ -79,7 +81,9 @@ func (repository *BboltRepository) DatasetMetadata(context.Context) (*DatasetMet
 
 func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, options LookupOptions) (*LookupResponse, error) {
 	address := netip.MustParseAddr(ip.Canonical)
-	var allocations, routes, geofeeds []LookupCandidate
+	var allocations []boltstore.Allocation
+	var routes []boltstore.Route
+	var geofeeds []boltstore.Geofeed
 	err := repository.db.View(func(tx *bbolt.Tx) error {
 		allocationIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
 		if err != nil {
@@ -90,7 +94,7 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, 
 			if err != nil {
 				return err
 			}
-			allocations = append(allocations, allocationCandidate(record))
+			allocations = append(allocations, record)
 		}
 		routeIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketRouteIndex), address, maxCandidates)
 		if err != nil {
@@ -101,7 +105,7 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, 
 			if err != nil {
 				return err
 			}
-			routes = append(routes, routeCandidate(record))
+			routes = append(routes, record)
 		}
 		geofeedIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
 		if err != nil {
@@ -112,14 +116,216 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, 
 			if err != nil {
 				return err
 			}
-			geofeeds = append(geofeeds, geofeedCandidate(record))
+			geofeeds = append(geofeeds, record)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bbolt IP lookup: %w", err)
 	}
-	return BuildResponse(ip, allocations, routes, geofeeds, options), nil
+	return buildBboltResponse(ip, allocations, routes, geofeeds, options), nil
+}
+
+// buildBboltResponse is the production point-lookup path. It keeps bbolt's
+// binary addresses intact through selection and JSON construction, avoiding
+// the historical decimal sort-key and math/big conversion layer.
+func buildBboltResponse(ip ipkey.Parsed, allocations []boltstore.Allocation, routes []boltstore.Route, geofeeds []boltstore.Geofeed, options LookupOptions) *LookupResponse {
+	allocation := narrowestAllocation(allocations)
+	bestRoutes := narrowestRoutes(routes)
+	geofeed := narrowestGeofeed(geofeeds)
+	if allocation == nil && len(bestRoutes) == 0 && geofeed == nil {
+		return nil
+	}
+
+	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
+	response.Network.ASNs = bboltASNs(bestRoutes)
+	if len(response.Network.ASNs) == 1 {
+		response.Network.ASN = &response.Network.ASNs[0]
+		response.Network.ASNumber = asNumber(response.Network.ASN)
+	}
+	if len(bestRoutes) > 0 {
+		route := bestRoutes[0]
+		response.Network.CIDR = optional(recordPrefix(route))
+		start, end := prefixRangeForRecord(route)
+		startIP, endIP := start.Addr(int(route.Version)).String(), end.Addr(int(route.Version)).String()
+		response.Network.StartIP, response.Network.EndIP = &startIP, &endIP
+		response.Network.AbuseContact = optional(route.AbuseContact)
+	}
+	if allocation != nil {
+		response.Network.Name = optional(allocation.Name)
+		allocationStart := allocation.Start.Addr(int(allocation.Version)).String()
+		allocationEnd := allocation.End.Addr(int(allocation.Version)).String()
+		response.Allocation.StartIP, response.Allocation.EndIP = &allocationStart, &allocationEnd
+		response.Allocation.Registry = lower(optional(allocation.Registry))
+		response.Allocation.CountryRaw = upper(optional(allocation.Country))
+		response.Allocation.CountryCode = countryCode(response.Allocation.CountryRaw)
+		response.Allocation.Name = optional(allocation.Name)
+		response.Allocation.AllocationDate = optional(allocation.AllocationDate)
+		response.Allocation.Status = optional(allocation.Status)
+		response.Allocation.AbuseContact = optional(allocation.AbuseContact)
+		response.Registry = lower(optional(allocation.Registry))
+		response.AllocationDate = response.Allocation.AllocationDate
+		response.AllocationStatus = response.Allocation.Status
+	}
+	if geofeed != nil {
+		response.Location.CountryCode = countryCode(upper(optional(geofeed.Country)))
+		response.Location.Region = optional(geofeed.Region)
+		response.Location.City = optional(geofeed.City)
+	}
+	if response.Location.CountryCode == nil {
+		response.Location.CountryCode = response.Allocation.CountryCode
+	}
+	response.Sources.Allocation = allocation != nil
+	response.Sources.Route = len(bestRoutes) > 0
+	response.Sources.Geofeed = geofeed != nil
+	if options.Details == LookupDetailsFull {
+		response.Details = bboltDetails(allocations, routes, geofeeds)
+	}
+	return response
+}
+
+func narrowestAllocation(values []boltstore.Allocation) *boltstore.Allocation {
+	if len(values) == 0 {
+		return nil
+	}
+	best := &values[0]
+	for index := 1; index < len(values); index++ {
+		candidate := &values[index]
+		if rangeWidthCompare(candidate.Start, candidate.End, best.Start, best.End) < 0 {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func narrowestGeofeed(values []boltstore.Geofeed) *boltstore.Geofeed {
+	if len(values) == 0 {
+		return nil
+	}
+	best := &values[0]
+	for index := 1; index < len(values); index++ {
+		candidate := &values[index]
+		if rangeWidthCompare(candidate.Start, candidate.End, best.Start, best.End) < 0 {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func narrowestRoutes(values []boltstore.Route) []boltstore.Route {
+	if len(values) == 0 {
+		return nil
+	}
+	bestLength := values[0].PrefixLength
+	for _, value := range values[1:] {
+		if value.PrefixLength > bestLength {
+			bestLength = value.PrefixLength
+		}
+	}
+	result := make([]boltstore.Route, 0, len(values))
+	for _, value := range values {
+		if value.PrefixLength == bestLength {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func rangeWidthCompare(leftStart, leftEnd, rightStart, rightEnd boltstore.Address) int {
+	var leftWidth, rightWidth [16]byte
+	subtractAddress(leftWidth[:], leftEnd[:], leftStart[:])
+	subtractAddress(rightWidth[:], rightEnd[:], rightStart[:])
+	return bytes.Compare(leftWidth[:], rightWidth[:])
+}
+
+func subtractAddress(destination, left, right []byte) {
+	borrow := 0
+	for index := len(destination) - 1; index >= 0; index-- {
+		value := int(left[index]) - int(right[index]) - borrow
+		if value < 0 {
+			value += 256
+			borrow = 1
+		} else {
+			borrow = 0
+		}
+		destination[index] = byte(value)
+	}
+}
+
+func bboltASNs(routes []boltstore.Route) []string {
+	type asnValue struct {
+		name   string
+		number uint32
+	}
+	values := make([]asnValue, 0, len(routes))
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		name := strings.ToUpper(strings.TrimSpace(route.OriginASN))
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		values = append(values, asnValue{name: name, number: route.ASNumber})
+	}
+	sort.Slice(values, func(left, right int) bool {
+		if values[left].number != values[right].number {
+			return values[left].number < values[right].number
+		}
+		return values[left].name < values[right].name
+	})
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, value.name)
+	}
+	return result
+}
+
+func bboltDetails(allocations []boltstore.Allocation, routes []boltstore.Route, geofeeds []boltstore.Geofeed) *LookupDetails {
+	result := &LookupDetails{}
+	if len(allocations) > 0 {
+		result.Allocations = make([]LookupDetailRecord, 0, len(allocations))
+		for _, value := range allocations {
+			result.Allocations = append(result.Allocations, allocationDetail(value))
+		}
+	}
+	if len(routes) > 0 {
+		result.Routes = make([]LookupDetailRecord, 0, len(routes))
+		for _, value := range routes {
+			result.Routes = append(result.Routes, routeDetail(value))
+		}
+	}
+	if len(geofeeds) > 0 {
+		result.Geofeeds = make([]LookupDetailRecord, 0, len(geofeeds))
+		for _, value := range geofeeds {
+			result.Geofeeds = append(result.Geofeeds, geofeedDetail(value))
+		}
+	}
+	return result
+}
+
+func allocationDetail(value boltstore.Allocation) LookupDetailRecord {
+	return LookupDetailRecord{
+		StartIP: value.Start.Addr(int(value.Version)).String(), EndIP: value.End.Addr(int(value.Version)).String(), Version: int(value.Version),
+		Registry: lower(optional(value.Registry)), CountryCode: countryCode(upper(optional(value.Country))), CountryRaw: upper(optional(value.Country)), Name: optional(value.Name), Status: optional(value.Status), AllocationDate: optional(value.AllocationDate), Created: optional(value.Created), LastModified: optional(value.LastModified), Source: optional(value.Source), Maintainers: optional(value.Maintainers), Organization: optional(value.Organization), AbuseContact: optional(value.AbuseContact), Description: optional(value.Description),
+	}
+}
+
+func routeDetail(value boltstore.Route) LookupDetailRecord {
+	start, end := prefixRangeForRecord(value)
+	result := LookupDetailRecord{
+		StartIP: start.Addr(int(value.Version)).String(), EndIP: end.Addr(int(value.Version)).String(), Version: int(value.Version), CIDR: optional(recordPrefix(value)), ASN: upper(optional(value.OriginASN)), Registry: lower(optional(value.Registry)), Source: optional(value.Source), Maintainers: optional(value.Maintainers), Organization: optional(value.Organization), AbuseContact: optional(value.AbuseContact), Description: optional(value.Description),
+	}
+	result.ASNumber = asNumber(result.ASN)
+	return result
+}
+
+func geofeedDetail(value boltstore.Geofeed) LookupDetailRecord {
+	return LookupDetailRecord{
+		StartIP: value.Start.Addr(int(value.Version)).String(), EndIP: value.End.Addr(int(value.Version)).String(), Version: int(value.Version), CountryCode: countryCode(upper(optional(value.Country))), CountryRaw: upper(optional(value.Country)), Region: optional(value.Region), City: optional(value.City),
+	}
 }
 
 func (repository *BboltRepository) LookupPrefix(ctx context.Context, prefix ipkey.ParsedPrefix, page Page) (*PrefixResponse, error) {
@@ -168,52 +374,272 @@ func (repository *BboltRepository) LookupPrefix(ctx context.Context, prefix ipke
 	return &PrefixResponse{Prefix: prefixDescriptor(prefix), Allocation: allocation, Routes: RoutePage{Items: routes, NextCursor: next}}, nil
 }
 
-func (repository *BboltRepository) LookupRange(ctx context.Context, value ipkey.ParsedRange, kind RangeKind, page Page) (*RangeResponse, error) {
+func (repository *BboltRepository) LookupRange(ctx context.Context, value ipkey.ParsedRange, kind RangeKind, page RangePage) (*RangeResponse, error) {
 	if err := repository.acquireOverlapSlot(ctx); err != nil {
 		return nil, err
 	}
 	defer repository.releaseOverlapSlot()
 	response := &RangeResponse{Range: rangeDescriptor(value), Kind: kind, Mode: "records"}
 	err := repository.db.View(func(tx *bbolt.Tx) error {
-		if kind == RangeAllocations {
-			ids, err := overlapIDs(ctx, tx.Bucket(boltstore.BucketAllocationIndex), value.Start, value.End, page.Cursor)
-			if err != nil {
-				return err
-			}
-			if len(ids) > page.Limit+1 {
-				ids = ids[:page.Limit+1]
-			}
-			for _, id := range ids {
-				record, err := allocationByID(tx, id)
-				if err != nil {
-					return err
-				}
-				response.Allocations = append(response.Allocations, allocationObject(id, record))
-			}
-			response.Allocations, response.NextCursor = allocationPage(response.Allocations, page.Limit)
-			return nil
-		}
-		ids, err := overlapIDs(ctx, tx.Bucket(boltstore.BucketRouteIndex), value.Start, value.End, page.Cursor)
+		entries, next, err := rangePageEntries(ctx, tx, value, kind, page)
 		if err != nil {
 			return err
 		}
-		if len(ids) > page.Limit+1 {
-			ids = ids[:page.Limit+1]
+		response.NextCursor = next
+		if kind == RangeAllocations {
+			for _, entry := range entries {
+				record, err := allocationByID(tx, entry.id)
+				if err != nil {
+					return err
+				}
+				response.Allocations = append(response.Allocations, allocationObject(entry.id, record))
+			}
+			return nil
 		}
-		for _, id := range ids {
-			record, err := routeByID(tx, id)
+		for _, entry := range entries {
+			record, err := routeByID(tx, entry.id)
 			if err != nil {
 				return err
 			}
-			response.Routes = append(response.Routes, routeObject(id, record))
+			response.Routes = append(response.Routes, routeObject(entry.id, record))
 		}
-		response.Routes, response.NextCursor = routePage(response.Routes, page.Limit)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bbolt range lookup: %w", err)
 	}
 	return response, nil
+}
+
+const (
+	rangeCursorCovering byte = 1
+	rangeCursorDirect   byte = 2
+	rangeCursorSize          = 1 + 1 + 16 + 16 + boltstore.RangeIndexKeySize
+)
+
+type rangeCursor struct {
+	phase      byte
+	kind       RangeKind
+	queryStart boltstore.Address
+	queryEnd   boltstore.Address
+	key        [boltstore.RangeIndexKeySize]byte
+}
+
+type rangeIndexEntry struct {
+	id  uint64
+	key [boltstore.RangeIndexKeySize]byte
+}
+
+func rangePageEntries(ctx context.Context, tx *bbolt.Tx, value ipkey.ParsedRange, kind RangeKind, page RangePage) ([]rangeIndexEntry, nullableString, error) {
+	cursor, err := decodeRangeCursor(page.Cursor)
+	if err != nil {
+		return nil, nil, err
+	}
+	start := boltstore.AddressFromAddr(netip.MustParseAddr(value.Start.Canonical))
+	end := boltstore.AddressFromAddr(netip.MustParseAddr(value.End.Canonical))
+	version := uint8(value.Version)
+	if cursor.phase != 0 && (cursor.kind != kind || cursor.queryStart != start || cursor.queryEnd != end || cursor.key[0] != version) {
+		return nil, nil, errInvalidRangeCursor
+	}
+	pointIndex, rangeIndex := rangeBuckets(tx, kind)
+	if pointIndex == nil || rangeIndex == nil {
+		return nil, nil, fmt.Errorf("range index bucket is missing")
+	}
+	entries := make([]rangeIndexEntry, 0, page.Limit)
+	if cursor.phase != rangeCursorDirect {
+		covering, err := coveringRangeEntries(ctx, tx, pointIndex, kind, version, start)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, entry := range covering {
+			if cursor.phase == rangeCursorCovering && bytes.Compare(entry.key[:], cursor.key[:]) <= 0 {
+				continue
+			}
+			if len(entries) == page.Limit {
+				return entries, encodeRangeCursor(rangeCursorCovering, kind, start, end, entries[len(entries)-1].key), nil
+			}
+			entries = append(entries, entry)
+		}
+	}
+
+	var after *[boltstore.RangeIndexKeySize]byte
+	if cursor.phase == rangeCursorDirect {
+		after = &cursor.key
+	}
+	direct, more, err := directRangeEntries(ctx, rangeIndex, version, start, end, after, page.Limit-len(entries)+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(entries) == page.Limit {
+		if len(direct) > 0 {
+			var first [boltstore.RangeIndexKeySize]byte
+			boltstore.RangeIndexStartKey(first[:], version, start)
+			return entries, encodeRangeCursor(rangeCursorDirect, kind, start, end, first), nil
+		}
+		return entries, nil, nil
+	}
+	capacity := page.Limit - len(entries)
+	if len(direct) > capacity {
+		direct = direct[:capacity]
+		more = true
+	}
+	entries = append(entries, direct...)
+	if more && len(entries) > 0 {
+		return entries, encodeRangeCursor(rangeCursorDirect, kind, start, end, entries[len(entries)-1].key), nil
+	}
+	return entries, nil, nil
+}
+
+func rangeBuckets(tx *bbolt.Tx, kind RangeKind) (*bbolt.Bucket, *bbolt.Bucket) {
+	if kind == RangeAllocations {
+		return tx.Bucket(boltstore.BucketAllocationIndex), tx.Bucket(boltstore.BucketAllocationRange)
+	}
+	return tx.Bucket(boltstore.BucketRouteIndex), tx.Bucket(boltstore.BucketRouteRange)
+}
+
+func coveringRangeEntries(ctx context.Context, tx *bbolt.Tx, pointIndex *bbolt.Bucket, kind RangeKind, version uint8, start boltstore.Address) ([]rangeIndexEntry, error) {
+	address := start.Addr(int(version))
+	ids, err := matchingIPIDs(ctx, pointIndex, address, 0)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[uint64]struct{}, len(ids))
+	entries := make([]rangeIndexEntry, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		entry, matches, err := coveringRangeEntry(tx, kind, id, start)
+		if err != nil {
+			return nil, err
+		}
+		if matches {
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(left, right int) bool { return bytes.Compare(entries[left].key[:], entries[right].key[:]) < 0 })
+	return entries, nil
+}
+
+func coveringRangeEntry(tx *bbolt.Tx, kind RangeKind, id uint64, queryStart boltstore.Address) (rangeIndexEntry, bool, error) {
+	var start, end boltstore.Address
+	var version uint8
+	if kind == RangeAllocations {
+		record, err := allocationByID(tx, id)
+		if err != nil {
+			return rangeIndexEntry{}, false, err
+		}
+		start, end, version = record.Start, record.End, record.Version
+	} else {
+		record, err := routeByID(tx, id)
+		if err != nil {
+			return rangeIndexEntry{}, false, err
+		}
+		start, end = prefixRangeForRecord(record)
+		version = record.Version
+	}
+	if bytes.Compare(start[:], queryStart[:]) >= 0 || bytes.Compare(end[:], queryStart[:]) < 0 {
+		return rangeIndexEntry{}, false, nil
+	}
+	entry := rangeIndexEntry{id: id}
+	boltstore.PutRangeIndexKey(entry.key[:], version, start, end, id)
+	return entry, true, nil
+}
+
+func prefixRangeForRecord(record boltstore.Route) (boltstore.Address, boltstore.Address) {
+	start := record.Network
+	end := start
+	bits, offset := 128, 0
+	if record.Version == 4 {
+		bits, offset = 32, 12
+	}
+	for bit := int(record.PrefixLength); bit < bits; bit++ {
+		end[offset+bit/8] |= 1 << uint(7-bit%8)
+	}
+	return start, end
+}
+
+func directRangeEntries(ctx context.Context, bucket *bbolt.Bucket, version uint8, start, end boltstore.Address, after *[boltstore.RangeIndexKeySize]byte, maximum int) ([]rangeIndexEntry, bool, error) {
+	if maximum < 1 {
+		maximum = 1
+	}
+	var seek [boltstore.RangeIndexKeySize]byte
+	if after != nil {
+		seek = *after
+	} else {
+		boltstore.RangeIndexStartKey(seek[:], version, start)
+	}
+	cursor := bucket.Cursor()
+	key, _ := cursor.Seek(seek[:])
+	if after != nil && bytes.Equal(key, after[:]) {
+		key, _ = cursor.Next()
+	}
+	entries := make([]rangeIndexEntry, 0, maximum)
+	for ; len(key) == boltstore.RangeIndexKeySize && key[0] == version; key, _ = cursor.Next() {
+		entryStart, _ := boltstore.RangeIndexStart(key)
+		if bytes.Compare(entryStart[:], end[:]) > 0 {
+			break
+		}
+		if err := contextError(ctx); err != nil {
+			return nil, false, err
+		}
+		id, _ := boltstore.RangeIndexID(key)
+		entry := rangeIndexEntry{id: id}
+		copy(entry.key[:], key)
+		entries = append(entries, entry)
+		if len(entries) == maximum {
+			return entries, true, nil
+		}
+	}
+	return entries, false, nil
+}
+
+func encodeRangeCursor(phase byte, kind RangeKind, start, end boltstore.Address, key [boltstore.RangeIndexKeySize]byte) nullableString {
+	payload := make([]byte, rangeCursorSize)
+	payload[0] = phase
+	payload[1] = rangeKindValue(kind)
+	copy(payload[2:18], start[:])
+	copy(payload[18:34], end[:])
+	copy(payload[34:], key[:])
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	return &encoded
+}
+
+func decodeRangeCursor(value string) (rangeCursor, error) {
+	if value == "" {
+		return rangeCursor{}, nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(payload) != rangeCursorSize || (payload[0] != rangeCursorCovering && payload[0] != rangeCursorDirect) {
+		return rangeCursor{}, errInvalidRangeCursor
+	}
+	result := rangeCursor{phase: payload[0], kind: rangeKindFromValue(payload[1])}
+	if result.kind == "" {
+		return rangeCursor{}, errInvalidRangeCursor
+	}
+	copy(result.queryStart[:], payload[2:18])
+	copy(result.queryEnd[:], payload[18:34])
+	copy(result.key[:], payload[34:])
+	return result, nil
+}
+
+func rangeKindValue(kind RangeKind) byte {
+	if kind == RangeAllocations {
+		return 1
+	}
+	return 2
+}
+
+func rangeKindFromValue(value byte) RangeKind {
+	switch value {
+	case 1:
+		return RangeAllocations
+	case 2:
+		return RangeRoutes
+	default:
+		return ""
+	}
 }
 
 func (repository *BboltRepository) LookupRangeSummary(ctx context.Context, value ipkey.ParsedRange, kind RangeKind) (*RangeResponse, error) {
@@ -464,19 +890,6 @@ func geofeedByID(tx *bbolt.Tx, id uint64) (boltstore.Geofeed, error) {
 	return boltstore.DecodeGeofeed(raw)
 }
 
-func allocationCandidate(value boltstore.Allocation) LookupCandidate {
-	return LookupCandidate{StartIPSort: parsedAddress(value.Start, int(value.Version)).SortKey, EndIPSort: parsedAddress(value.End, int(value.Version)).SortKey, IPVersion: int(value.Version), Registry: optional(value.Registry), Country: optional(value.Country), Netname: optional(value.Name), Status: optional(value.Status), AllocationDate: optional(value.AllocationDate), Created: optional(value.Created), LastModified: optional(value.LastModified), RecordSource: optional(value.Source), MntBy: optional(value.Maintainers), Org: optional(value.Organization), AbuseContact: optional(value.AbuseContact), Description: optional(value.Description)}
-}
-
-func routeCandidate(value boltstore.Route) LookupCandidate {
-	prefix, _ := ipkey.ParsePrefix(recordPrefix(value))
-	return LookupCandidate{StartIPSort: prefix.Start.SortKey, EndIPSort: prefix.End.SortKey, IPVersion: int(value.Version), Registry: optional(value.Registry), CIDR: optional(prefix.Canonical), ASN: optional(value.OriginASN), RecordSource: optional(value.Source), MntBy: optional(value.Maintainers), Org: optional(value.Organization), AbuseContact: optional(value.AbuseContact), Description: optional(value.Description)}
-}
-
-func geofeedCandidate(value boltstore.Geofeed) LookupCandidate {
-	return LookupCandidate{StartIPSort: parsedAddress(value.Start, int(value.Version)).SortKey, EndIPSort: parsedAddress(value.End, int(value.Version)).SortKey, IPVersion: int(value.Version), Country: optional(value.Country), Region: optional(value.Region), City: optional(value.City)}
-}
-
 func allocationObject(id uint64, value boltstore.Allocation) AllocationObject {
 	return AllocationObject{ID: int64(id), StartIP: value.Start.Addr(int(value.Version)).String(), EndIP: value.End.Addr(int(value.Version)).String(), Version: int(value.Version), Registry: lower(optional(value.Registry)), CountryCode: countryCode(upper(optional(value.Country))), CountryRaw: upper(optional(value.Country)), Name: optional(value.Name), Status: optional(value.Status), AllocationDate: optional(value.AllocationDate), Created: optional(value.Created), LastModified: optional(value.LastModified), Source: optional(value.Source), Maintainers: optional(value.Maintainers), Organization: optional(value.Organization), AbuseContact: optional(value.AbuseContact), Description: optional(value.Description)}
 }
@@ -497,10 +910,6 @@ func autnumObject(value boltstore.Autnum) AutnumObject {
 
 func recordPrefix(value boltstore.Route) string {
 	return netip.PrefixFrom(value.Network.Addr(int(value.Version)), int(value.PrefixLength)).String()
-}
-func parsedAddress(value boltstore.Address, version int) ipkey.Parsed {
-	result, _ := ipkey.Parse(value.Addr(version).String())
-	return result
 }
 func optional(value string) nullableString {
 	value = strings.TrimSpace(value)

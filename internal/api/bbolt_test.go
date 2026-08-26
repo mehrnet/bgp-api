@@ -3,12 +3,14 @@ package api
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/mehrnet/bgp-api/internal/boltstore"
 	"github.com/mehrnet/bgp-api/internal/ipkey"
+	bbolt "go.etcd.io/bbolt"
 )
 
 func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
@@ -37,7 +39,7 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	}
 
 	rangeValue, _ := ipkey.ParseRange("1.1.1.1", "1.1.1.2")
-	rangeResponse, err := repository.LookupRange(ctx, rangeValue, RangeAllocations, Page{Limit: 10})
+	rangeResponse, err := repository.LookupRange(ctx, rangeValue, RangeAllocations, RangePage{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,6 +54,17 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	}
 	if summary.Summary == nil || summary.Summary.RouteRecords != 2 || summary.Summary.AllocationRecords != 2 {
 		t.Fatalf("summary = %#v", summary.Summary)
+	}
+	if summary.Summary.BucketPrefixLength != 8 || summary.Summary.Buckets != 1 {
+		t.Fatalf("materialized summary = %#v", summary.Summary)
+	}
+	intermediateRange, _ := ipkey.ParseRange("1.0.0.0", "1.31.255.255")
+	intermediateSummary, err := repository.LookupRangeSummary(ctx, intermediateRange, RangeAllocations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if intermediateSummary.Summary == nil || intermediateSummary.Summary.BucketPrefixLength != 11 || intermediateSummary.Summary.Buckets != 1 || intermediateSummary.Summary.AllocationRecords != 33 || intermediateSummary.Summary.RouteRecords != 2 {
+		t.Fatalf("intermediate materialized summary = %#v", intermediateSummary.Summary)
 	}
 
 	asnResponse, err := repository.LookupASN(ctx, 13335, Page{Limit: 1, Number: 1, Numbered: true})
@@ -68,6 +81,65 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	}
 	if metadata == nil || metadata.ReleaseTag == nil || *metadata.ReleaseTag != "db-test" || metadata.ActivatedAt == nil {
 		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestBboltRangePaginationUsesProducerRangeIndex(t *testing.T) {
+	repository := testBboltRepository(t)
+	ctx := context.Background()
+	rangeValue, _ := ipkey.ParseRange("1.1.1.0", "1.1.1.255")
+
+	first, err := repository.LookupRange(ctx, rangeValue, RangeAllocations, RangePage{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Allocations) != 1 || first.Allocations[0].Name == nil || *first.Allocations[0].Name != "APNIC-1" || first.NextCursor == nil {
+		t.Fatalf("first allocation page = %#v", first)
+	}
+	second, err := repository.LookupRange(ctx, rangeValue, RangeAllocations, RangePage{Limit: 1, Cursor: *first.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Allocations) != 1 || second.Allocations[0].Name == nil || *second.Allocations[0].Name != "APNIC-LABS" || second.NextCursor != nil {
+		t.Fatalf("second allocation page = %#v", second)
+	}
+
+	firstRoute, err := repository.LookupRange(ctx, rangeValue, RangeRoutes, RangePage{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstRoute.Routes) != 1 || firstRoute.Routes[0].OriginASN != "AS13335" || firstRoute.NextCursor == nil {
+		t.Fatalf("first route page = %#v", firstRoute)
+	}
+	secondRoute, err := repository.LookupRange(ctx, rangeValue, RangeRoutes, RangePage{Limit: 1, Cursor: *firstRoute.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondRoute.Routes) != 1 || secondRoute.Routes[0].OriginASN != "AS64500" || secondRoute.NextCursor != nil {
+		t.Fatalf("second route page = %#v", secondRoute)
+	}
+
+	_, err = repository.LookupRange(ctx, rangeValue, RangeRoutes, RangePage{Limit: 1, Cursor: "not-a-range-cursor"})
+	if !errors.Is(err, errInvalidRangeCursor) {
+		t.Fatalf("invalid cursor error = %v", err)
+	}
+	_, err = repository.LookupRange(ctx, rangeValue, RangeRoutes, RangePage{Limit: 1, Cursor: *first.NextCursor})
+	if !errors.Is(err, errInvalidRangeCursor) {
+		t.Fatalf("cross-kind cursor error = %v", err)
+	}
+}
+
+func TestBboltBuildMaterializesAllIPv4SummaryPrefixes(t *testing.T) {
+	repository := testBboltRepository(t)
+	var summaries int
+	if err := repository.db.View(func(transaction *bbolt.Tx) error {
+		summaries = transaction.Bucket(boltstore.BucketRangeSummaries).Stats().KeyN
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if summaries != (1<<17)-1 {
+		t.Fatalf("summary records = %d", summaries)
 	}
 }
 

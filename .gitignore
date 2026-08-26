@@ -4,3 +4,4 @@ bin/
 *.sqlite-shm
 *.sqlite-wal
 mehrnet_bgp.db
+*.test

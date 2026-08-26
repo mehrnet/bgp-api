@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	SchemaVersion = 1
-	PrefixKeySize = 18
-	IndexKeySize  = PrefixKeySize + 8
+	SchemaVersion     = 2
+	PrefixKeySize     = 18
+	IndexKeySize      = PrefixKeySize + 8
+	RangeIndexKeySize = 1 + 16 + 16 + 8
 )
 
 var (
@@ -22,13 +23,15 @@ var (
 	BucketAllocationIndex = []byte("allocation_prefixes")
 	BucketRouteIndex      = []byte("route_prefixes")
 	BucketGeofeedIndex    = []byte("geofeed_prefixes")
+	BucketAllocationRange = []byte("allocation_ranges")
+	BucketRouteRange      = []byte("route_ranges")
 	BucketASNRoutes       = []byte("asn_routes")
 	BucketRangeSummaries  = []byte("range_summaries")
 	KeySchemaVersion      = []byte("schema_version")
 	KeyReleaseTag         = []byte("release_tag")
 	KeyBuiltAt            = []byte("built_at")
 	KeySourceCommit       = []byte("source_commit")
-	RequiredBuckets       = [][]byte{BucketMetadata, BucketAllocations, BucketRoutes, BucketGeofeeds, BucketAutnums, BucketAllocationIndex, BucketRouteIndex, BucketGeofeedIndex, BucketASNRoutes, BucketRangeSummaries}
+	RequiredBuckets       = [][]byte{BucketMetadata, BucketAllocations, BucketRoutes, BucketGeofeeds, BucketAutnums, BucketAllocationIndex, BucketRouteIndex, BucketGeofeedIndex, BucketAllocationRange, BucketRouteRange, BucketASNRoutes, BucketRangeSummaries}
 )
 
 type Address [16]byte
@@ -139,6 +142,51 @@ func IndexID(key []byte) (uint64, bool) {
 		return 0, false
 	}
 	return binary.BigEndian.Uint64(key[PrefixKeySize:]), true
+}
+
+// RangeIndexKey orders original source records by IP version, start address,
+// end address, and stable record ID. It allows a range page to seek directly
+// to its next record instead of rebuilding a full overlap result set.
+func RangeIndexKey(version uint8, start, end Address, id uint64) []byte {
+	key := make([]byte, RangeIndexKeySize)
+	return PutRangeIndexKey(key, version, start, end, id)
+}
+
+func PutRangeIndexKey(key []byte, version uint8, start, end Address, id uint64) []byte {
+	if len(key) < RangeIndexKeySize {
+		panic("bbolt range index key buffer is too small")
+	}
+	key[0] = version
+	copy(key[1:17], start[:])
+	copy(key[17:33], end[:])
+	binary.BigEndian.PutUint64(key[33:41], id)
+	return key[:RangeIndexKeySize]
+}
+
+func RangeIndexStartKey(key []byte, version uint8, start Address) []byte {
+	if len(key) < RangeIndexKeySize {
+		panic("bbolt range index key buffer is too small")
+	}
+	key[0] = version
+	copy(key[1:17], start[:])
+	clear(key[17:RangeIndexKeySize])
+	return key[:RangeIndexKeySize]
+}
+
+func RangeIndexStart(key []byte) (Address, bool) {
+	if len(key) != RangeIndexKeySize {
+		return Address{}, false
+	}
+	var start Address
+	copy(start[:], key[1:17])
+	return start, true
+}
+
+func RangeIndexID(key []byte) (uint64, bool) {
+	if len(key) != RangeIndexKeySize {
+		return 0, false
+	}
+	return binary.BigEndian.Uint64(key[33:41]), true
 }
 
 func EncodeIDs(ids []uint64) []byte {

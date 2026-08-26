@@ -21,6 +21,14 @@ type Parsed struct {
 	SortKey   string
 }
 
+// RuntimeIP is the normalized address representation used by the bbolt API
+// request path. Unlike Parsed, it deliberately has no decimal sort key.
+type RuntimeIP struct {
+	Address   netip.Addr
+	Canonical string
+	Version   int
+}
+
 type RangePrefix struct {
 	Key    string
 	Length int
@@ -93,22 +101,35 @@ func prefixKey(version int, value *big.Int, length int) string {
 }
 
 func Parse(input string) (Parsed, bool) {
-	addr, err := netip.ParseAddr(strings.TrimSpace(input))
-	if err != nil || addr.Zone() != "" {
+	runtimeIP, ok := ParseRuntime(input)
+	if !ok {
 		return Parsed{}, false
 	}
-	if addr.Is4() {
-		bytes := addr.As4()
+	if runtimeIP.Version == 4 {
+		bytes := runtimeIP.Address.As4()
 		value := new(big.Int).SetBytes(bytes[:])
 		value.Or(value, ipv4Mapped)
-		return Parsed{Canonical: addr.String(), Version: 4, SortKey: pad(value)}, true
+		return Parsed{Canonical: runtimeIP.Canonical, Version: runtimeIP.Version, SortKey: pad(value)}, true
 	}
-	if !addr.Is6() {
-		return Parsed{}, false
-	}
-	bytes := addr.As16()
+	bytes := runtimeIP.Address.As16()
 	value := new(big.Int).SetBytes(bytes[:])
-	return Parsed{Canonical: addr.String(), Version: 6, SortKey: pad(value)}, true
+	return Parsed{Canonical: runtimeIP.Canonical, Version: runtimeIP.Version, SortKey: pad(value)}, true
+}
+
+// ParseRuntime validates and normalizes an address without constructing the
+// legacy decimal sort key required by producer and SQLite-only utilities.
+func ParseRuntime(input string) (RuntimeIP, bool) {
+	address, err := netip.ParseAddr(strings.TrimSpace(input))
+	if err != nil || address.Zone() != "" {
+		return RuntimeIP{}, false
+	}
+	version := 6
+	if address.Is4() {
+		version = 4
+	} else if !address.Is6() {
+		return RuntimeIP{}, false
+	}
+	return RuntimeIP{Address: address, Canonical: address.String(), Version: version}, true
 }
 
 func ParsePrefix(input string) (ParsedPrefix, bool) {

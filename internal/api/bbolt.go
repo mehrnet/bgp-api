@@ -79,7 +79,7 @@ func (repository *BboltRepository) DatasetMetadata(context.Context) (*DatasetMet
 	return &copy, nil
 }
 
-func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, options LookupOptions) (*LookupResponse, error) {
+func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.RuntimeIP, options LookupOptions) (*LookupResponse, error) {
 	if options.Details == LookupDetailsFull {
 		return repository.lookupFull(ctx, ip)
 	}
@@ -88,8 +88,8 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, 
 
 // lookupCompact is the default browser/API path. It selects the same records
 // as details=full, but reads only the fields represented in LookupResponse.
-func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.Parsed) (*LookupResponse, error) {
-	address := netip.MustParseAddr(ip.Canonical)
+func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.RuntimeIP) (*LookupResponse, error) {
+	address := ip.Address
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
 	var geofeeds []boltstore.Geofeed
@@ -141,8 +141,8 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.P
 
 // lookupFull keeps the complete RIR/IRR/geofeed source traversal available to
 // clients that explicitly request details=full.
-func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.Parsed) (*LookupResponse, error) {
-	address := netip.MustParseAddr(ip.Canonical)
+func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.RuntimeIP) (*LookupResponse, error) {
+	address := ip.Address
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
 	var geofeeds []boltstore.Geofeed
@@ -191,7 +191,7 @@ func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.Pars
 // buildBboltResponse is the production point-lookup path. It keeps bbolt's
 // binary addresses intact through selection and JSON construction, avoiding
 // the historical decimal sort-key and math/big conversion layer.
-func buildBboltResponse(ip ipkey.Parsed, allocations []boltstore.Allocation, routes []boltstore.Route, geofeeds []boltstore.Geofeed, options LookupOptions) *LookupResponse {
+func buildBboltResponse(ip ipkey.RuntimeIP, allocations []boltstore.Allocation, routes []boltstore.Route, geofeeds []boltstore.Geofeed, options LookupOptions) *LookupResponse {
 	allocation := narrowestAllocation(allocations)
 	bestRoutes := narrowestRoutes(routes)
 	geofeed := narrowestGeofeed(geofeeds)

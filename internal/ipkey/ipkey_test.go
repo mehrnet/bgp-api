@@ -36,6 +36,59 @@ func TestParseRejectsInvalidIP(t *testing.T) {
 	}
 }
 
+func TestParseRuntimeNormalizesWithoutSortKey(t *testing.T) {
+	for _, test := range []struct {
+		input, canonical string
+		version          int
+	}{
+		{" 1.1.1.1 ", "1.1.1.1", 4},
+		{"2001:0db8::1", "2001:db8::1", 6},
+	} {
+		parsed, ok := ParseRuntime(test.input)
+		if !ok {
+			t.Fatalf("ParseRuntime(%q) rejected a valid address", test.input)
+		}
+		if parsed.Canonical != test.canonical || parsed.Version != test.version || !parsed.Address.IsValid() {
+			t.Fatalf("ParseRuntime(%q) = %#v", test.input, parsed)
+		}
+	}
+	if _, ok := ParseRuntime("fe80::1%ens18"); ok {
+		t.Fatal("ParseRuntime accepted a scoped address")
+	}
+}
+
+func BenchmarkParseRuntimeIPv4(b *testing.B) {
+	for index := 0; index < b.N; index++ {
+		if _, ok := ParseRuntime("80.93.223.205"); !ok {
+			b.Fatal("parse failed")
+		}
+	}
+}
+
+func BenchmarkParseLegacyIPv4(b *testing.B) {
+	for index := 0; index < b.N; index++ {
+		if _, ok := Parse("80.93.223.205"); !ok {
+			b.Fatal("parse failed")
+		}
+	}
+}
+
+func BenchmarkParseRuntimeIPv6(b *testing.B) {
+	for index := 0; index < b.N; index++ {
+		if _, ok := ParseRuntime("2001:db8:1234:5678::1"); !ok {
+			b.Fatal("parse failed")
+		}
+	}
+}
+
+func BenchmarkParseLegacyIPv6(b *testing.B) {
+	for index := 0; index < b.N; index++ {
+		if _, ok := Parse("2001:db8:1234:5678::1"); !ok {
+			b.Fatal("parse failed")
+		}
+	}
+}
+
 func TestParsePrefixNormalizesAndCalculatesBounds(t *testing.T) {
 	prefix, ok := ParsePrefix("1.1.1.42/24")
 	if !ok {

@@ -20,7 +20,7 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	repository := testBboltRepository(t)
 	ctx := context.Background()
 
-	ip, _ := ipkey.Parse("1.1.1.1")
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
 	compact, err := repository.Lookup(ctx, ip, LookupOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestBboltBuildMaterializesAllIPv4SummaryPrefixes(t *testing.T) {
 
 func BenchmarkBboltLookupIP(b *testing.B) {
 	repository := testBboltRepository(b)
-	ip, _ := ipkey.Parse("1.1.1.1")
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
@@ -179,7 +179,7 @@ func BenchmarkBboltLookupIP(b *testing.B) {
 
 func BenchmarkBboltLookupIPFull(b *testing.B) {
 	repository := testBboltRepository(b)
-	ip, _ := ipkey.Parse("1.1.1.1")
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
@@ -191,7 +191,7 @@ func BenchmarkBboltLookupIPFull(b *testing.B) {
 
 func BenchmarkBboltLookupIPPrefixScan(b *testing.B) {
 	repository := testBboltRepository(b)
-	ip, _ := ipkey.Parse("1.1.1.1")
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
 	b.ReportAllocs()
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
@@ -204,8 +204,8 @@ func BenchmarkBboltLookupIPPrefixScan(b *testing.B) {
 // lookupCompactPrefixScan is the compact lookup before the producer-built
 // route LPM. Keeping it test-only makes the end-to-end benchmark comparable
 // without retaining the old path in production.
-func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.Parsed) (*LookupResponse, error) {
-	address := netip.MustParseAddr(ip.Canonical)
+func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.RuntimeIP) (*LookupResponse, error) {
+	address := ip.Address
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
 	var geofeeds []boltstore.Geofeed
@@ -253,8 +253,8 @@ func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.Parsed) (*Loo
 
 func BenchmarkBboltRouteLPM(b *testing.B) {
 	repository := testBboltRepository(b)
-	address, _ := ipkey.Parse("1.1.1.1")
-	query := netip.MustParseAddr(address.Canonical)
+	address, _ := ipkey.ParseRuntime("1.1.1.1")
+	query := address.Address
 	b.ReportAllocs()
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
@@ -273,8 +273,8 @@ func BenchmarkBboltRouteLPM(b *testing.B) {
 // It is retained in tests to quantify the benefit of the immutable LPM index.
 func BenchmarkBboltRoutePrefixScan(b *testing.B) {
 	repository := testBboltRepository(b)
-	address, _ := ipkey.Parse("1.1.1.1")
-	query := netip.MustParseAddr(address.Canonical)
+	address, _ := ipkey.ParseRuntime("1.1.1.1")
+	query := address.Address
 	b.ReportAllocs()
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {

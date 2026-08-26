@@ -13,7 +13,7 @@ import (
 
 type fakeRepository struct{}
 
-func (fakeRepository) Lookup(_ context.Context, ip ipkey.Parsed, options LookupOptions) (*LookupResponse, error) {
+func (fakeRepository) Lookup(_ context.Context, ip ipkey.RuntimeIP, options LookupOptions) (*LookupResponse, error) {
 	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
 	response.Network.ASNs = []string{}
 	if options.Details == LookupDetailsFull {

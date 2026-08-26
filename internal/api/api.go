@@ -15,7 +15,7 @@ import (
 )
 
 type Repository interface {
-	Lookup(context.Context, ipkey.Parsed, LookupOptions) (*LookupResponse, error)
+	Lookup(context.Context, ipkey.RuntimeIP, LookupOptions) (*LookupResponse, error)
 }
 
 type MetadataRepository interface {
@@ -433,7 +433,7 @@ func parseASN(input string) (uint32, bool) {
 }
 
 func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
-	ip, ok := ipkey.Parse(input)
+	ip, ok := ipkey.ParseRuntime(input)
 	if !ok {
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "query must be a valid IPv4 or IPv6 address")
 		return

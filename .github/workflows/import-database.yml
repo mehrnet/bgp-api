@@ -281,6 +281,10 @@ jobs:
               docker kill bgp-postgres-build || true
             fi
           }
+          docker run --rm --user root \
+            --volume "$PWD/build/pgdata:/var/lib/postgresql/mehrnet-data" \
+            postgres:15.13-bookworm@sha256:d1f651d3a24650cd68a4e7fcf4eef7bd772c2ec965c3563f36b91c1fecddac76 \
+            chmod -R a+rX /var/lib/postgresql/mehrnet-data
           if [ ! -s build/pgdata/PG_VERSION ]; then
             echo "PostgreSQL bind mount did not expose PG_VERSION; recovering the stopped data directory" >&2
             docker cp bgp-postgres-build:/var/lib/postgresql/mehrnet-data/. build/pgdata/

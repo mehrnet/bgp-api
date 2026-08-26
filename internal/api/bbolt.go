@@ -80,6 +80,64 @@ func (repository *BboltRepository) DatasetMetadata(context.Context) (*DatasetMet
 }
 
 func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, options LookupOptions) (*LookupResponse, error) {
+	if options.Details == LookupDetailsFull {
+		return repository.lookupFull(ctx, ip)
+	}
+	return repository.lookupCompact(ctx, ip)
+}
+
+// lookupCompact is the default browser/API path. It selects the same records
+// as details=full, but reads only the fields represented in LookupResponse.
+func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.Parsed) (*LookupResponse, error) {
+	address := netip.MustParseAddr(ip.Canonical)
+	var allocations []boltstore.Allocation
+	var routes []boltstore.Route
+	var geofeeds []boltstore.Geofeed
+	err := repository.db.View(func(tx *bbolt.Tx) error {
+		allocationIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range allocationIDs {
+			record, err := allocationLookupByID(tx, id)
+			if err != nil {
+				return err
+			}
+			allocations = append(allocations, record)
+		}
+		routeIDs, err := matchingMostSpecificIPIDs(ctx, tx.Bucket(boltstore.BucketRouteIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range routeIDs {
+			record, err := routeLookupByID(tx, id)
+			if err != nil {
+				return err
+			}
+			routes = append(routes, record)
+		}
+		geofeedIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range geofeedIDs {
+			record, err := geofeedByID(tx, id)
+			if err != nil {
+				return err
+			}
+			geofeeds = append(geofeeds, record)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bbolt compact IP lookup: %w", err)
+	}
+	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{}), nil
+}
+
+// lookupFull keeps the complete RIR/IRR/geofeed source traversal available to
+// clients that explicitly request details=full.
+func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.Parsed) (*LookupResponse, error) {
 	address := netip.MustParseAddr(ip.Canonical)
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
@@ -121,9 +179,9 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.Parsed, 
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bbolt IP lookup: %w", err)
+		return nil, fmt.Errorf("bbolt full IP lookup: %w", err)
 	}
-	return buildBboltResponse(ip, allocations, routes, geofeeds, options), nil
+	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{Details: LookupDetailsFull}), nil
 }
 
 // buildBboltResponse is the production point-lookup path. It keeps bbolt's
@@ -774,6 +832,36 @@ func matchingIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr,
 	return ids, nil
 }
 
+// matchingMostSpecificIPIDs returns all records at the longest prefix that
+// contains address. The compact response needs only those route objects;
+// details=full deliberately uses matchingIPIDs to retain every ancestor.
+func matchingMostSpecificIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint64, error) {
+	bits := 128
+	if address.Is4() {
+		bits = 32
+	}
+	cursor := index.Cursor()
+	var seek [boltstore.IndexKeySize]byte
+	for length := bits; length >= 0; length-- {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
+		base := boltstore.PutPrefixKey(seek[:], netip.PrefixFrom(address, length))
+		ids := make([]uint64, 0)
+		for key, _ := cursor.Seek(seek[:]); len(key) == boltstore.IndexKeySize && bytes.Equal(key[:boltstore.PrefixKeySize], base); key, _ = cursor.Next() {
+			id, _ := boltstore.IndexID(key)
+			ids = append(ids, id)
+			if limit > 0 && len(ids) == limit {
+				break
+			}
+		}
+		if len(ids) > 0 {
+			return ids, nil
+		}
+	}
+	return nil, nil
+}
+
 func overlapIDs(ctx context.Context, index *bbolt.Bucket, startValue, endValue ipkey.Parsed, after int64) ([]uint64, error) {
 	startAddress := boltstore.AddressFromAddr(netip.MustParseAddr(startValue.Canonical))
 	endAddress := boltstore.AddressFromAddr(netip.MustParseAddr(endValue.Canonical))
@@ -870,6 +958,16 @@ func allocationByID(tx *bbolt.Tx, id uint64) (boltstore.Allocation, error) {
 	return boltstore.DecodeAllocation(raw)
 }
 
+func allocationLookupByID(tx *bbolt.Tx, id uint64) (boltstore.Allocation, error) {
+	var key [8]byte
+	binary.BigEndian.PutUint64(key[:], id)
+	raw := tx.Bucket(boltstore.BucketAllocations).Get(key[:])
+	if raw == nil {
+		return boltstore.Allocation{}, fmt.Errorf("allocation %d is missing", id)
+	}
+	return boltstore.DecodeAllocationLookup(raw)
+}
+
 func routeByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
 	var key [8]byte
 	binary.BigEndian.PutUint64(key[:], id)
@@ -878,6 +976,16 @@ func routeByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
 		return boltstore.Route{}, fmt.Errorf("route %d is missing", id)
 	}
 	return boltstore.DecodeRoute(raw)
+}
+
+func routeLookupByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
+	var key [8]byte
+	binary.BigEndian.PutUint64(key[:], id)
+	raw := tx.Bucket(boltstore.BucketRoutes).Get(key[:])
+	if raw == nil {
+		return boltstore.Route{}, fmt.Errorf("route %d is missing", id)
+	}
+	return boltstore.DecodeRouteLookup(raw)
 }
 
 func geofeedByID(tx *bbolt.Tx, id uint64) (boltstore.Geofeed, error) {

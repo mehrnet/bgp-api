@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/mehrnet/bgp-api/internal/boltstore"
@@ -18,6 +19,14 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	ctx := context.Background()
 
 	ip, _ := ipkey.Parse("1.1.1.1")
+	compact, err := repository.Lookup(ctx, ip, LookupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compact == nil || compact.Details != nil {
+		t.Fatalf("compact lookup = %#v", compact)
+	}
+
 	lookup, err := repository.Lookup(ctx, ip, LookupOptions{Details: LookupDetailsFull})
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +36,10 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	}
 	if lookup.Details == nil || len(lookup.Details.Allocations) != 2 || len(lookup.Details.Routes) != 2 {
 		t.Fatalf("lookup details = %#v", lookup.Details)
+	}
+	lookup.Details = nil
+	if !reflect.DeepEqual(compact, lookup) {
+		t.Fatalf("compact response diverged from details=full response:\ncompact=%#v\nfull=%#v", compact, lookup)
 	}
 
 	prefix, _ := ipkey.ParsePrefix("1.1.1.0/24")
@@ -150,6 +163,18 @@ func BenchmarkBboltLookupIP(b *testing.B) {
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
 		if _, err := repository.Lookup(context.Background(), ip, LookupOptions{}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkBboltLookupIPFull(b *testing.B) {
+	repository := testBboltRepository(b)
+	ip, _ := ipkey.Parse("1.1.1.1")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if _, err := repository.Lookup(context.Background(), ip, LookupOptions{Details: LookupDetailsFull}); err != nil {
 			b.Fatal(err)
 		}
 	}

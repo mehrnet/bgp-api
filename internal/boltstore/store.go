@@ -284,6 +284,16 @@ func (reader *decoder) string() (string, error) {
 	return string(value), nil
 }
 
+func (reader *decoder) skipString() error {
+	length, read := binary.Uvarint(reader.value[reader.offset:])
+	if read <= 0 {
+		return errors.New("invalid bbolt string length")
+	}
+	reader.offset += read
+	_, err := reader.take(int(length))
+	return err
+}
+
 func (reader *decoder) done() error {
 	if reader.offset != len(reader.value) {
 		return fmt.Errorf("bbolt record has %d trailing bytes", len(reader.value)-reader.offset)
@@ -324,6 +334,41 @@ func DecodeAllocation(value []byte) (Allocation, error) {
 	return result, r.done()
 }
 
+// DecodeAllocationLookup reads only fields used by the compact IP response.
+// Provenance strings remain unallocated until a details=full request asks for
+// the complete source object.
+func DecodeAllocationLookup(value []byte) (Allocation, error) {
+	r := decoder{value: value}
+	result := Allocation{}
+	var err error
+	if result.Version, err = r.byte(); err != nil {
+		return result, err
+	}
+	if result.Start, err = r.address(); err != nil {
+		return result, err
+	}
+	if result.End, err = r.address(); err != nil {
+		return result, err
+	}
+	for _, item := range []*string{&result.Registry, &result.Country, &result.Name, &result.Status, &result.AllocationDate} {
+		if *item, err = r.string(); err != nil {
+			return result, err
+		}
+	}
+	for range 5 { // created, last-modified, source, mnt-by, and organization
+		if err := r.skipString(); err != nil {
+			return result, err
+		}
+	}
+	if result.AbuseContact, err = r.string(); err != nil {
+		return result, err
+	}
+	if err := r.skipString(); err != nil { // description
+		return result, err
+	}
+	return result, r.done()
+}
+
 func EncodeRoute(value Route) []byte {
 	w := encoder{}
 	w.byte(value.Version)
@@ -357,6 +402,40 @@ func DecodeRoute(value []byte) (Route, error) {
 		if *item, err = r.string(); err != nil {
 			return result, err
 		}
+	}
+	return result, r.done()
+}
+
+// DecodeRouteLookup reads only fields used by the compact IP response.
+func DecodeRouteLookup(value []byte) (Route, error) {
+	r := decoder{value: value}
+	result := Route{}
+	var err error
+	if result.Version, err = r.byte(); err != nil {
+		return result, err
+	}
+	if result.PrefixLength, err = r.byte(); err != nil {
+		return result, err
+	}
+	if result.Network, err = r.address(); err != nil {
+		return result, err
+	}
+	if result.ASNumber, err = r.uint32(); err != nil {
+		return result, err
+	}
+	if result.OriginASN, err = r.string(); err != nil {
+		return result, err
+	}
+	for range 4 { // registry, source, mnt-by, and organization
+		if err := r.skipString(); err != nil {
+			return result, err
+		}
+	}
+	if result.AbuseContact, err = r.string(); err != nil {
+		return result, err
+	}
+	if err := r.skipString(); err != nil { // description
+		return result, err
 	}
 	return result, r.done()
 }

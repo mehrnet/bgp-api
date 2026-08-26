@@ -59,7 +59,6 @@ type Config struct {
 	AllowedOrigins  map[string]struct{}
 	OriginAuthToken string
 	Build           BuildInfo
-	DatabaseEngine  string
 	TrustedProxies  []netip.Prefix
 }
 
@@ -171,9 +170,6 @@ type errorResponse struct {
 }
 
 func New(repository Repository, config Config) http.Handler {
-	if config.DatabaseEngine == "" {
-		config.DatabaseEngine = "bbolt"
-	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if config.OriginAuthToken != "" && request.Header.Get("X-BGP-API-Origin-Token") != config.OriginAuthToken {
 			writeError(writer, http.StatusUnauthorized, "UNAUTHORIZED", "origin authorization required")
@@ -216,7 +212,7 @@ func New(repository Repository, config Config) http.Handler {
 }
 
 func health(writer http.ResponseWriter, request *http.Request, repository Repository, config Config) {
-	response := HealthResponse{OK: true, Service: "bgp-api", Version: 1, Database: config.DatabaseEngine}
+	response := HealthResponse{OK: true, Service: "bgp-api", Version: 1, Database: "bbolt"}
 	response.Build = buildInfo(config.Build)
 	metadata, err := datasetMetadata(request.Context(), repository)
 	if err != nil {

@@ -25,7 +25,7 @@ var (
 func main() {
 	path := os.Getenv("BGP_API_DATABASE_PATH")
 	if path == "" {
-		path = "/var/lib/bgp-api/mehrnet_bgp.bbolt"
+		path = "/var/lib/bgp-api/primary.bbolt"
 	}
 	store, err := api.NewBboltRepository(path)
 	if err != nil {
@@ -57,7 +57,6 @@ func main() {
 			Commit:  stringPointer(commit),
 			BuiltAt: stringPointer(builtAt),
 		},
-		DatabaseEngine: "bbolt",
 		TrustedProxies: trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
 	}
 	handler := api.New(store, config)

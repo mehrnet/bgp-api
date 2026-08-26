@@ -74,7 +74,7 @@ func (resourceFakeRepository) LookupASN(_ context.Context, asn uint32, page Page
 }
 
 func TestHandlerRejectsInvalidIP(t *testing.T) {
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "bbolt"})
+	handler := New(fakeRepository{}, Config{})
 	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=not-an-ip", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -87,7 +87,7 @@ func TestHandlerRejectsInvalidIP(t *testing.T) {
 }
 
 func TestHandlerRequiresOriginToken(t *testing.T) {
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "bbolt", OriginAuthToken: "shared-token"})
+	handler := New(fakeRepository{}, Config{OriginAuthToken: "shared-token"})
 	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -106,7 +106,7 @@ func TestHealthIncludesDatasetMetadata(t *testing.T) {
 	version := "db-2026.07.27-0719-9"
 	commit := "62a5fd6b0c94e7f58aaeb4cf8e44394ab054c340"
 	builtAt := "2026-07-27T07:27:00Z"
-	handler := New(fakeRepository{}, Config{DatabaseEngine: "bbolt", Build: BuildInfo{Version: &version, Commit: &commit, BuiltAt: &builtAt}})
+	handler := New(fakeRepository{}, Config{Build: BuildInfo{Version: &version, Commit: &commit, BuiltAt: &builtAt}})
 	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

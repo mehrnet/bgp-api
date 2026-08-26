@@ -20,7 +20,7 @@ RIR, RDAP, routing, or geolocation services while handling a request.
 - Root access
 - An active release database plus temporary space for a second copy during updates
 
-Go, PostgreSQL, Docker, and a compiler are not required.
+Go and a compiler are not required.
 
 ### Local service
 

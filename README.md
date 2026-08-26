@@ -86,6 +86,27 @@ CRON_TZ=UTC
 The `--auto-update` option writes the equivalent schedule to
 `/etc/cron.d/mehrnet-bgp-api-update` and enables the host's cron service.
 
+### Uninstall
+
+This stops and removes the API and PostgreSQL containers, the database writable
+layer, deployment images, automatic-update job, managed Caddy configuration,
+and `/srv/bgp-api`:
+
+```sh
+sudo /srv/bgp-api/install.sh --uninstall
+```
+
+For an older installation that does not have the flag yet, run the current
+installer directly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --uninstall
+```
+
+The uninstall is non-interactive and permanently removes the local database.
+It deliberately leaves Docker and Caddy installed because other applications
+may depend on them.
+
 Useful operational commands:
 
 ```sh

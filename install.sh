@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install or update the digest-pinned MehrNet BGP API Docker deployment.
+# Install, update, or remove the digest-pinned MehrNet BGP API Docker deployment.
 set -Eeuo pipefail
 
 readonly REPOSITORY="${BGP_API_GITHUB_REPOSITORY:-mehrnet/bgp-api}"
@@ -33,16 +33,18 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Install or update MehrNet BGP API.
+Install, update, or uninstall MehrNet BGP API.
 
 Usage:
   install.sh [--domain DOMAIN] [--auto-update]
   install.sh --update
+  install.sh --uninstall
 
 Options:
   --domain DOMAIN  Configure Caddy and HTTPS for the given API hostname.
   --auto-update    Install a daily update job for exactly 06:00 UTC.
   --update         Apply verified release patches and update the API image.
+  --uninstall      Remove the deployment, database, images, Caddy config, and cron job.
   -h, --help       Show this help.
 
 Environment:
@@ -67,7 +69,13 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --update)
+      [ "$MODE" = install ] || die "only one operation can be selected"
       MODE=update
+      shift
+      ;;
+    --uninstall)
+      [ "$MODE" = install ] || die "only one operation can be selected"
+      MODE=uninstall
       shift
       ;;
     -h|--help)
@@ -80,8 +88,8 @@ done
 
 [ "$EUID" -eq 0 ] || die "run this installer as root (for example, pipe it to sudo bash)"
 [[ "$INSTALL_DIR" != *[[:space:]]* ]] || die "BGP_API_INSTALL_DIR cannot contain whitespace"
-if [ "$MODE" = update ] && { [ "$DOMAIN_SET" = true ] || [ "$AUTO_UPDATE" = true ]; }; then
-  die "--update cannot be combined with installation options"
+if [ "$MODE" != install ] && { [ "$DOMAIN_SET" = true ] || [ "$AUTO_UPDATE" = true ]; }; then
+  die "--$MODE cannot be combined with installation options"
 fi
 
 valid_domain() {
@@ -301,10 +309,94 @@ wait_for_api() {
   die "the API did not become healthy within four minutes"
 }
 
-install_base_tools
+uninstall_deployment() {
+  local managed_caddy=/etc/caddy/conf.d/mehrnet-bgp-api.caddy
+  local caddy_main=/etc/caddy/Caddyfile
+  local image
+  local -a deployment_images=()
+
+  if ! { [ -f "$ENV_FILE" ] && [ -f "$COMPOSE_FILE" ] && grep -q '^DOMAIN=' "$CONFIG_FILE"; }; then
+    die "no bgp-api installation found in $INSTALL_DIR"
+  fi
+  [[ "$INSTALL_DIR" == /*/* ]] || die "refusing unsafe installation path: $INSTALL_DIR"
+
+  step "Stopping and removing the bgp-api deployment"
+  if command -v docker >/dev/null 2>&1; then
+    if ! docker info >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+      systemctl start docker >/dev/null 2>&1 || true
+    fi
+    docker info >/dev/null 2>&1 || die "start Docker before uninstalling bgp-api"
+    docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is required to uninstall bgp-api"
+    mapfile -t deployment_images < <(compose images -q 2>/dev/null || true)
+    deployment_images+=(
+      "$(env_value BGP_API_IMAGE "$ENV_FILE")"
+      "$(env_value BGP_API_POSTGRES_IMAGE "$ENV_FILE")"
+      "$(env_value BGP_API_SYNC_IMAGE "$ENV_FILE")"
+    )
+    compose down --volumes --remove-orphans
+    for image in "${deployment_images[@]}"; do
+      [ -n "$image" ] || continue
+      if docker image inspect "$image" >/dev/null 2>&1; then
+        docker image rm "$image" >/dev/null 2>&1 || \
+          say "warning: kept image still used by another container: $image"
+      fi
+    done
+  else
+    say "warning: Docker is unavailable; removing configuration files only"
+  fi
+
+  step "Removing the updater and Caddy configuration"
+  rm -f -- "$CRON_FILE" /var/log/mehrnet-bgp-api-update.log
+  if command -v crontab >/dev/null 2>&1 && root_crontab="$(crontab -l 2>/dev/null)"; then
+    filtered_crontab="$(awk -v script="$INSTALLED_SCRIPT" 'index($0, script " --update") == 0' <<<"$root_crontab")"
+    if [ "$filtered_crontab" != "$root_crontab" ]; then
+      printf '%s\n' "$filtered_crontab" | crontab -
+    fi
+  fi
+  caddy_changed=false
+  if [ -e "$managed_caddy" ]; then
+    rm -f -- "$managed_caddy"
+    caddy_changed=true
+  fi
+  rm -f -- /etc/bgp-api/caddy.env /etc/systemd/system/caddy.service.d/mehrnet-bgp-api.conf
+  rmdir /etc/bgp-api /etc/systemd/system/caddy.service.d 2>/dev/null || true
+  if [ "$caddy_changed" = true ] && [ -f "$caddy_main" ]; then
+    shopt -s nullglob
+    remaining_caddy=(/etc/caddy/conf.d/*.caddy)
+    shopt -u nullglob
+    if [ "${#remaining_caddy[@]}" -eq 0 ]; then
+      sed -i '\|^import /etc/caddy/conf.d/\*\.caddy$|d' "$caddy_main"
+    fi
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+    if [ "$caddy_changed" = true ] && systemctl is-active --quiet caddy; then
+      if caddy validate --config "$caddy_main" --adapter caddyfile >/dev/null; then
+        systemctl reload caddy
+      else
+        say "warning: Caddy was not reloaded because its remaining configuration is invalid"
+      fi
+    fi
+  fi
+
+  rm -rf -- "$INSTALL_DIR"
+  success "MehrNet BGP API was completely removed."
+  say "Docker and Caddy remain installed for other applications."
+}
+
+if [ "$MODE" = uninstall ]; then
+  command -v flock >/dev/null 2>&1 || die "flock is required to uninstall bgp-api safely"
+else
+  install_base_tools
+fi
 mkdir -p /run/lock
 exec 9>"$LOCK_FILE"
-flock -n 9 || die "another install or update is already running"
+flock -n 9 || die "another install, update, or uninstall is already running"
+
+if [ "$MODE" = uninstall ]; then
+  uninstall_deployment
+  exit 0
+fi
 
 if [ "$MODE" = update ]; then
   [ -x "$SYNC_SCRIPT" ] || die "no installation found in $INSTALL_DIR"

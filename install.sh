@@ -9,8 +9,10 @@ readonly DATA_DIR="${BGP_API_DATA_DIR:-/var/lib/bgp-api}"
 readonly CONFIG_DIR="/etc/bgp-api"
 readonly CONFIG_FILE="$INSTALL_DIR/install.conf"
 readonly ENV_FILE="$CONFIG_DIR/bgp-api.env"
+readonly SECONDARY_ENV_FILE="$CONFIG_DIR/bgp-api-secondary.env"
 readonly UPDATE_ENV_FILE="$CONFIG_DIR/update.env"
 readonly SERVICE_FILE="/etc/systemd/system/bgp-api.service"
+readonly SECONDARY_SERVICE_FILE="/etc/systemd/system/bgp-api-secondary.service"
 readonly SYNC_SERVICE_FILE="/etc/systemd/system/bgp-api-sync.service"
 readonly SYNC_SCRIPT="$INSTALL_DIR/scripts/sync-bbolt.sh"
 readonly INSTALLED_SCRIPT="$INSTALL_DIR/install.sh"
@@ -57,6 +59,7 @@ Environment:
   BGP_API_GITHUB_TOKEN       Optional GitHub token for higher API limits.
   BGP_API_GITHUB_REPOSITORY  Release repository (default: mehrnet/bgp-api).
   BGP_API_SOURCE_REF         Deployment-file ref (default: main).
+  BGP_API_BLUE_GREEN         Set to 0 to force stop-and-replace updates.
 EOF
 }
 
@@ -172,6 +175,7 @@ configure_caddy() {
   {
     printf 'BGP_API_DOMAIN=%s\n' "$DOMAIN"
     printf 'ORIGIN_AUTH_TOKEN=%s\n' "$token"
+    printf 'BGP_API_UPSTREAM=127.0.0.1:3102\n'
   } > "$CADDY_ENV_FILE"
   chmod 0640 "$CADDY_ENV_FILE"
   if getent group caddy >/dev/null 2>&1; then chown root:caddy "$CADDY_ENV_FILE"; fi
@@ -214,10 +218,11 @@ EOF
 uninstall_deployment() {
   step "Stopping and removing MehrNet BGP API"
   systemctl disable --now bgp-api.service >/dev/null 2>&1 || true
+  systemctl disable --now bgp-api-secondary.service >/dev/null 2>&1 || true
   systemctl stop bgp-api-sync.service >/dev/null 2>&1 || true
-  rm -f -- "$SERVICE_FILE" "$SYNC_SERVICE_FILE" "$CRON_FILE" /usr/local/bin/bgp-api
+  rm -f -- "$SERVICE_FILE" "$SECONDARY_SERVICE_FILE" "$SYNC_SERVICE_FILE" "$CRON_FILE" /usr/local/bin/bgp-api
   rm -rf -- "$DATA_DIR" "$INSTALL_DIR"
-  rm -f -- "$ENV_FILE" "$UPDATE_ENV_FILE" "$CADDY_ENV_FILE" "$CADDY_CONFIG" "$CADDY_DROP_IN"
+  rm -f -- "$ENV_FILE" "$SECONDARY_ENV_FILE" "$UPDATE_ENV_FILE" "$CADDY_ENV_FILE" "$CADDY_CONFIG" "$CADDY_DROP_IN"
   rmdir "$CONFIG_DIR" /etc/systemd/system/caddy.service.d /etc/caddy/conf.d 2>/dev/null || true
   systemctl daemon-reload
   if command -v caddy >/dev/null 2>&1 && systemctl is-active --quiet caddy; then
@@ -234,6 +239,12 @@ fi
 
 if [ "$ACTION" = update ]; then
   [ -x "$SYNC_SCRIPT" ] || die "no bbolt installation found at $INSTALL_DIR"
+  if [ -f "$UPDATE_ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$UPDATE_ENV_FILE"
+    set +a
+  fi
   exec "$SYNC_SCRIPT"
 fi
 
@@ -258,13 +269,23 @@ raw="https://raw.githubusercontent.com/$REPOSITORY/$source_sha"
 download "$raw/install.sh" "$work_dir/install.sh"
 download "$raw/scripts/sync-bbolt.sh" "$work_dir/sync-bbolt.sh"
 download "$raw/deploy/bgp-api.service" "$work_dir/bgp-api.service"
+download "$raw/deploy/bgp-api-secondary.service" "$work_dir/bgp-api-secondary.service"
 download "$raw/deploy/bgp-api-sync.service" "$work_dir/bgp-api-sync.service"
 download "$raw/deploy/Caddyfile" "$work_dir/Caddyfile"
 download "$raw/deploy/caddy.service.d.env.conf" "$work_dir/caddy.service.d.env.conf"
 install -m 0755 "$work_dir/install.sh" "$INSTALLED_SCRIPT"
 install -m 0755 "$work_dir/sync-bbolt.sh" "$SYNC_SCRIPT"
 install -m 0644 "$work_dir/bgp-api.service" "$SERVICE_FILE"
+install -m 0644 "$work_dir/bgp-api-secondary.service" "$SECONDARY_SERVICE_FILE"
 install -m 0644 "$work_dir/bgp-api-sync.service" "$SYNC_SERVICE_FILE"
+
+# Older installations kept the active file at the legacy path. Move it into
+# the primary slot before starting the two-slot service layout. Stop both
+# services only after all deployment files have been downloaded successfully.
+systemctl stop bgp-api.service bgp-api-secondary.service >/dev/null 2>&1 || true
+if [ -e "$DATA_DIR/mehrnet_bgp.bbolt" ] && [ ! -e "$DATA_DIR/primary.bbolt" ]; then
+  mv "$DATA_DIR/mehrnet_bgp.bbolt" "$DATA_DIR/primary.bbolt"
+fi
 
 origin_token=""
 if [ "$DOMAIN_SET" = true ]; then
@@ -276,7 +297,8 @@ if [ "$DOMAIN_SET" = true ]; then
   fi
 fi
 cat > "$ENV_FILE" <<EOF
-BGP_API_DATABASE_PATH=$DATA_DIR/mehrnet_bgp.bbolt
+BGP_API_DATABASE_PATH=$DATA_DIR/primary.bbolt
+BGP_API_PRIMARY_DATABASE_PATH=$DATA_DIR/primary.bbolt
 LISTEN_ADDR=127.0.0.1:3102
 GOMAXPROCS=2
 GOMEMLIMIT=384MiB
@@ -286,9 +308,22 @@ CORS_ALLOWED_ORIGINS_JSON='["https://bgp.mehrnet.com"]'
 EOF
 chown root:bgpapi "$ENV_FILE"
 chmod 0640 "$ENV_FILE"
+cat > "$SECONDARY_ENV_FILE" <<EOF
+BGP_API_DATABASE_PATH=$DATA_DIR/secondary.bbolt
+BGP_API_SECONDARY_DATABASE_PATH=$DATA_DIR/secondary.bbolt
+LISTEN_ADDR=127.0.0.1:3103
+GOMAXPROCS=2
+GOMEMLIMIT=384MiB
+ORIGIN_AUTH_TOKEN=$origin_token
+TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+CORS_ALLOWED_ORIGINS_JSON='["https://bgp.mehrnet.com"]'
+EOF
+chown root:bgpapi "$SECONDARY_ENV_FILE"
+chmod 0640 "$SECONDARY_ENV_FILE"
 cat > "$UPDATE_ENV_FILE" <<EOF
 BGP_API_GITHUB_REPOSITORY=$REPOSITORY
 BGP_API_GITHUB_TOKEN=${BGP_API_GITHUB_TOKEN:-}
+BGP_API_BLUE_GREEN=auto
 EOF
 chmod 0600 "$UPDATE_ENV_FILE"
 {
@@ -300,7 +335,9 @@ chmod 0600 "$CONFIG_FILE"
 systemctl daemon-reload
 systemctl enable bgp-api.service >/dev/null
 step "Downloading and activating the latest verified release"
-"$SYNC_SCRIPT"
+BGP_API_DATABASE_PATH="$DATA_DIR/primary.bbolt" \
+  BGP_API_PRIMARY_DATABASE_PATH="$DATA_DIR/primary.bbolt" \
+  BGP_API_BLUE_GREEN=0 "$SYNC_SCRIPT"
 systemctl restart bgp-api.service
 systemctl is-active --quiet bgp-api.service || die "bgp-api failed to start"
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=MehrNet BGP API
+Description=MehrNet BGP API (secondary update slot)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=simple
 User=bgpapi
 Group=bgpapi
-EnvironmentFile=/etc/bgp-api/bgp-api.env
+EnvironmentFile=/etc/bgp-api/bgp-api-secondary.env
 ExecStart=/usr/local/bin/bgp-api
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=2
 TimeoutStopSec=30s
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=200

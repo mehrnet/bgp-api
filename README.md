@@ -2,7 +2,8 @@
 
 Public IP-to-BGP, allocation, ASN, and geofeed lookup API for
 `bgp-api.mehrnet.com`. The Go server reads one immutable, pre-indexed bbolt
-file. Releases also include a pre-indexed SQLite database for third-party users
+file at a time. Domain deployments keep a second immutable slot available
+during updates. Releases also include a pre-indexed SQLite database for third-party users
 and offline inspection. The API does not build indexes, run migrations, or
 contact upstream services while answering requests.
 
@@ -13,7 +14,8 @@ The public frontend is maintained in
 
 The unattended installer supports Linux `amd64` and `arm64` hosts running
 systemd. It installs a statically linked API binary and the latest verified
-database, then binds the service to `127.0.0.1:3102`. Go is not required.
+database, then binds the primary service to `127.0.0.1:3102`. Go is not
+required.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | sudo bash -s -- --mode bare
@@ -32,16 +34,30 @@ release every day at exactly 06:00 UTC.
 Check the service:
 
 ```sh
-curl http://127.0.0.1:3102/v1/health
-curl 'http://127.0.0.1:3102/v1/ip?query=1.1.1.1'
+active_slot="$(cat /var/lib/bgp-api/active-slot 2>/dev/null || printf primary)"
+api_port=3102
+[ "$active_slot" = secondary ] && api_port=3103
+curl "http://127.0.0.1:$api_port/v1/health"
+curl "http://127.0.0.1:$api_port/v1/ip?query=1.1.1.1"
 ```
 
 ## Update
 
 Updates download the immutable database and matching binary, verify both
-against `SHA256SUMS.txt`, open the new database in validation mode, and then
-activate the files with same-filesystem renames. The previous files are kept
-only during activation so a failed service start can be rolled back.
+against `SHA256SUMS.txt`, and validate the new database before activation. On
+domain deployments with an active Caddy proxy, the updater starts the new
+database in the inactive slot (`127.0.0.1:3102` or `127.0.0.1:3103`), checks its
+health and dataset tag, then performs a graceful Caddy reload. Only after the
+switch does it drain and stop the old service and remove its database. Public
+requests therefore keep flowing while the immutable file changes.
+This removes the planned maintenance window; it cannot protect against a host,
+kernel, Caddy, or network failure.
+
+If Caddy is not available, blue/green mode is disabled automatically. If the
+host cannot hold both database files, or `BGP_API_BLUE_GREEN=0` is set, the
+updater stops both slots and replaces the primary file with a short maintenance
+window. The inactive slot is always disposable; no database indexes are built
+on the server.
 
 ```sh
 sudo /srv/bgp-api/install.sh --update
@@ -110,8 +126,11 @@ The installed service reads `/etc/bgp-api/bgp-api.env`. Relevant variables are:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BGP_API_DATABASE_PATH` | `/var/lib/bgp-api/mehrnet_bgp.bbolt` | Immutable dataset path |
-| `LISTEN_ADDR` | `127.0.0.1:3102` | HTTP listener |
+| `BGP_API_DATABASE_PATH` | `/var/lib/bgp-api/primary.bbolt` | Backward-compatible database variable |
+| `BGP_API_PRIMARY_DATABASE_PATH` | `/var/lib/bgp-api/primary.bbolt` | Primary immutable slot |
+| `BGP_API_SECONDARY_DATABASE_PATH` | `/var/lib/bgp-api/secondary.bbolt` | Secondary immutable slot |
+| `LISTEN_ADDR` | `127.0.0.1:3102` | Primary-slot HTTP listener |
+| `BGP_API_BLUE_GREEN` | `auto` | Update mode: `auto`, `1`, or `0` |
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Required proxy-to-origin token |
 | `TRUSTED_PROXY_CIDRS` | loopback | Peers allowed to supply client-IP headers |
@@ -122,6 +141,11 @@ The installer sets `GOMAXPROCS=2` and `GOMEMLIMIT=384MiB`, which targets a
 2-vCPU, 2-GiB server while leaving memory for the kernel page cache. The
 database is memory-mapped read-only; cached database pages are reclaimable and
 are not Go heap allocations.
+
+The primary and secondary systemd services use ports `3102` and `3103`. Only
+the active slot is enabled at boot; the updater changes that enablement when it
+switches slots. `active-slot` in the data directory records which slot Caddy
+serves.
 
 ## Run From Source
 

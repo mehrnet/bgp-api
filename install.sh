@@ -22,7 +22,6 @@ readonly CADDY_ENV_FILE="$CONFIG_DIR/caddy.env"
 readonly CADDY_DROP_IN="/etc/systemd/system/caddy.service.d/mehrnet-bgp-api.conf"
 
 ACTION=install
-MODE=bare
 DOMAIN=""
 DOMAIN_SET=false
 AUTO_UPDATE=false
@@ -43,12 +42,11 @@ usage() {
 Install, update, or uninstall MehrNet BGP API.
 
 Usage:
-  install.sh [--mode bare] [--domain DOMAIN] [--auto-update]
-  install.sh [--mode bare] --update
-  install.sh [--mode bare] --uninstall
+  install.sh [--domain DOMAIN] [--auto-update]
+  install.sh --update
+  install.sh --uninstall
 
 Options:
-  --mode bare     Install the native static binary and pre-indexed bbolt file.
   --domain NAME   Install Caddy and serve HTTPS for this hostname.
   --auto-update   Check for a verified release every day at 06:00 UTC.
   --update        Download and atomically activate the latest release.
@@ -65,11 +63,6 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --mode)
-      [ "$#" -ge 2 ] || die "--mode requires bare"
-      MODE="${2,,}"
-      shift 2
-      ;;
     --domain)
       [ "$#" -ge 2 ] || die "--domain requires a hostname"
       DOMAIN="${2,,}"
@@ -97,7 +90,6 @@ done
 
 [ "$EUID" -eq 0 ] || die "run this installer as root"
 [ "$(uname -s)" = Linux ] || die "this installer requires Linux"
-[ "$MODE" = bare ] || die "only --mode bare is supported"
 command -v systemctl >/dev/null 2>&1 || die "a systemd-based Linux host is required"
 if [ "$ACTION" != install ] && { [ "$DOMAIN_SET" = true ] || [ "$AUTO_UPDATE" = true ]; }; then
   die "--$ACTION cannot be combined with installation options"
@@ -327,7 +319,6 @@ BGP_API_BLUE_GREEN=auto
 EOF
 chmod 0600 "$UPDATE_ENV_FILE"
 {
-  printf 'MODE=bare\n'
   printf 'DOMAIN=%s\n' "$DOMAIN"
 } > "$CONFIG_FILE"
 chmod 0600 "$CONFIG_FILE"

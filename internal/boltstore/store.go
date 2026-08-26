@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	SchemaVersion     = 3
+	SchemaVersion     = 4
 	PrefixKeySize     = 18
 	IndexKeySize      = PrefixKeySize + 8
 	RangeIndexKeySize = 1 + 16 + 16 + 8
@@ -24,6 +24,8 @@ var (
 	BucketRouteIndex      = []byte("route_prefixes")
 	BucketRouteLPM        = []byte("route_lpm")
 	BucketGeofeedIndex    = []byte("geofeed_prefixes")
+	BucketAllocationLPM   = []byte("allocation_lpm")
+	BucketGeofeedLPM      = []byte("geofeed_lpm")
 	BucketAllocationRange = []byte("allocation_ranges")
 	BucketRouteRange      = []byte("route_ranges")
 	BucketASNRoutes       = []byte("asn_routes")
@@ -32,7 +34,7 @@ var (
 	KeyReleaseTag         = []byte("release_tag")
 	KeyBuiltAt            = []byte("built_at")
 	KeySourceCommit       = []byte("source_commit")
-	RequiredBuckets       = [][]byte{BucketMetadata, BucketAllocations, BucketRoutes, BucketGeofeeds, BucketAutnums, BucketAllocationIndex, BucketRouteIndex, BucketRouteLPM, BucketGeofeedIndex, BucketAllocationRange, BucketRouteRange, BucketASNRoutes, BucketRangeSummaries}
+	RequiredBuckets       = [][]byte{BucketMetadata, BucketAllocations, BucketRoutes, BucketGeofeeds, BucketAutnums, BucketAllocationIndex, BucketRouteIndex, BucketRouteLPM, BucketGeofeedIndex, BucketAllocationLPM, BucketGeofeedLPM, BucketAllocationRange, BucketRouteRange, BucketASNRoutes, BucketRangeSummaries}
 )
 
 type Address [16]byte
@@ -335,6 +337,25 @@ func DecodeAllocation(value []byte) (Allocation, error) {
 	return result, r.done()
 }
 
+// DecodeAllocationBounds reads only the immutable range needed while building
+// the compact allocation selector.
+func DecodeAllocationBounds(value []byte) (uint8, Address, Address, error) {
+	r := decoder{value: value}
+	version, err := r.byte()
+	if err != nil {
+		return 0, Address{}, Address{}, err
+	}
+	start, err := r.address()
+	if err != nil {
+		return 0, Address{}, Address{}, err
+	}
+	end, err := r.address()
+	if err != nil {
+		return 0, Address{}, Address{}, err
+	}
+	return version, start, end, nil
+}
+
 // DecodeAllocationLookup reads only fields used by the compact IP response.
 // Provenance strings remain unallocated until a details=full request asks for
 // the complete source object.
@@ -471,6 +492,25 @@ func DecodeGeofeed(value []byte) (Geofeed, error) {
 		}
 	}
 	return result, r.done()
+}
+
+// DecodeGeofeedBounds reads only the immutable range needed while building
+// the compact geofeed selector.
+func DecodeGeofeedBounds(value []byte) (uint8, Address, Address, error) {
+	r := decoder{value: value}
+	version, err := r.byte()
+	if err != nil {
+		return 0, Address{}, Address{}, err
+	}
+	start, err := r.address()
+	if err != nil {
+		return 0, Address{}, Address{}, err
+	}
+	end, err := r.address()
+	if err != nil {
+		return 0, Address{}, Address{}, err
+	}
+	return version, start, end, nil
 }
 
 func EncodeAutnum(value Autnum) []byte {

@@ -25,9 +25,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("built %s: allocations=%d routes=%d geofeeds=%d autnums=%d allocation_index=%d route_index=%d geofeed_index=%d allocation_range_index=%d route_range_index=%d route_lpm_nodes=%d route_lpm_ids=%d route_lpm_bytes=%d materialized_summaries=%d\n",
+	fmt.Printf("built %s: allocations=%d routes=%d geofeeds=%d autnums=%d allocation_index=%d route_index=%d geofeed_index=%d allocation_range_index=%d route_range_index=%d route_lpm_nodes=%d route_lpm_ids=%d route_lpm_bytes=%d allocation_lpm_nodes=%d allocation_lpm_bytes=%d geofeed_lpm_nodes=%d geofeed_lpm_bytes=%d materialized_summaries=%d\n",
 		*output, stats.Allocations, stats.Routes, stats.Geofeeds, stats.Autnums,
 		stats.AllocationIndex, stats.RouteIndex, stats.GeofeedIndex,
 		stats.AllocationRangeIndex, stats.RouteRangeIndex, stats.RouteLPMNodes,
-		stats.RouteLPMIDs, stats.RouteLPMBytes, stats.MaterializedSummary)
+		stats.RouteLPMIDs, stats.RouteLPMBytes, stats.AllocationLPMNodes,
+		stats.AllocationLPMBytes, stats.GeofeedLPMNodes, stats.GeofeedLPMBytes,
+		stats.MaterializedSummary)
 }

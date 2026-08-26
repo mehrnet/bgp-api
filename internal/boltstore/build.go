@@ -36,6 +36,8 @@ type BuildStats struct {
 	AllocationIndex, RouteIndex, GeofeedIndex                  uint64
 	AllocationRangeIndex, RouteRangeIndex, MaterializedSummary uint64
 	RouteLPMNodes, RouteLPMIDs, RouteLPMBytes                  uint64
+	AllocationLPMNodes, AllocationLPMBytes                     uint64
+	GeofeedLPMNodes, GeofeedLPMBytes                           uint64
 }
 
 type summaryAccumulator struct {
@@ -343,9 +345,89 @@ func (build *builder) writeDerived(ctx context.Context) error {
 		}
 		runtime.GC()
 	}
+	for _, version := range []uint8{4, 6} {
+		if err := build.writeSelectionLPM(ctx, version, BucketAllocations, BucketAllocationLPM, true); err != nil {
+			return err
+		}
+		runtime.GC()
+	}
+	for _, version := range []uint8{4, 6} {
+		if err := build.writeSelectionLPM(ctx, version, BucketGeofeeds, BucketGeofeedLPM, false); err != nil {
+			return err
+		}
+		runtime.GC()
+	}
 	return build.db.Update(func(tx *bbolt.Tx) error {
 		return build.writeMaterializedSummaries(ctx, tx.Bucket(BucketRangeSummaries))
 	})
+}
+
+func (build *builder) writeSelectionLPM(ctx context.Context, version uint8, objectBucket, selectorBucket []byte, allocation bool) error {
+	selector := newSelectionLPMBuilder(version)
+	err := build.db.View(func(tx *bbolt.Tx) error {
+		objects := tx.Bucket(objectBucket)
+		if objects == nil {
+			return errors.New("selection LPM object bucket is missing")
+		}
+		cursor := objects.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			if err := contextError(ctx); err != nil {
+				return err
+			}
+			if len(key) != 8 {
+				return errors.New("invalid selection LPM object ID")
+			}
+			id := binary.BigEndian.Uint64(key)
+			var recordVersion uint8
+			var start, end Address
+			var err error
+			if allocation {
+				recordVersion, start, end, err = DecodeAllocationBounds(value)
+			} else {
+				recordVersion, start, end, err = DecodeGeofeedBounds(value)
+			}
+			if err != nil {
+				return err
+			}
+			if recordVersion != version {
+				continue
+			}
+			prefixes, err := rangePrefixes(start, end, int(version))
+			if err != nil {
+				return err
+			}
+			for _, prefix := range prefixes {
+				if err := selector.Insert(prefix, id, start, end); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	encoded, stats, err := selector.Encode()
+	if err != nil {
+		return err
+	}
+	if err := build.db.Update(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(selectorBucket)
+		if bucket == nil {
+			return errors.New("selection LPM output bucket is missing")
+		}
+		return bucket.Put(SelectionLPMKey(version), encoded)
+	}); err != nil {
+		return err
+	}
+	if allocation {
+		build.stats.AllocationLPMNodes += stats.Nodes
+		build.stats.AllocationLPMBytes += stats.Bytes
+	} else {
+		build.stats.GeofeedLPMNodes += stats.Nodes
+		build.stats.GeofeedLPMBytes += stats.Bytes
+	}
+	return nil
 }
 
 func (build *builder) writeASNRoutes(ctx context.Context) error {

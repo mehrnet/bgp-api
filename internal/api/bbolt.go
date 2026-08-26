@@ -94,12 +94,13 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 	var routes []boltstore.Route
 	var geofeeds []boltstore.Geofeed
 	err := repository.db.View(func(tx *bbolt.Tx) error {
-		allocationIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
+		allocationLPM := tx.Bucket(boltstore.BucketAllocationLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
+		allocationID, err := boltstore.LookupSelectionLPM(allocationLPM, address)
 		if err != nil {
 			return err
 		}
-		for _, id := range allocationIDs {
-			record, err := allocationLookupByID(tx, id)
+		if allocationID != 0 {
+			record, err := allocationLookupByID(tx, allocationID)
 			if err != nil {
 				return err
 			}
@@ -120,12 +121,13 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 			}
 			routes = append(routes, record)
 		}
-		geofeedIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
+		geofeedLPM := tx.Bucket(boltstore.BucketGeofeedLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
+		geofeedID, err := boltstore.LookupSelectionLPM(geofeedLPM, address)
 		if err != nil {
 			return err
 		}
-		for _, id := range geofeedIDs {
-			record, err := geofeedByID(tx, id)
+		if geofeedID != 0 {
+			record, err := geofeedByID(tx, geofeedID)
 			if err != nil {
 				return err
 			}

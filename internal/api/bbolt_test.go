@@ -36,7 +36,7 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	if lookup == nil || lookup.Registry == nil || *lookup.Registry != "apnic" || len(lookup.Network.ASNs) != 2 || lookup.Location.City == nil || *lookup.Location.City != "South Brisbane" {
 		t.Fatalf("lookup = %#v", lookup)
 	}
-	if lookup.Details == nil || len(lookup.Details.Allocations) != 2 || len(lookup.Details.Routes) != 2 {
+	if lookup.Details == nil || len(lookup.Details.Allocations) != 2 || len(lookup.Details.Routes) != 2 || len(lookup.Details.Geofeeds) != 2 {
 		t.Fatalf("lookup details = %#v", lookup.Details)
 	}
 	lookup.Details = nil
@@ -201,6 +201,18 @@ func BenchmarkBboltLookupIPPrefixScan(b *testing.B) {
 	}
 }
 
+func BenchmarkBboltLookupIPRouteLPMPrefixScan(b *testing.B) {
+	repository := testBboltRepository(b)
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if _, err := lookupCompactRouteLPMPrefixScan(repository, ip); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // lookupCompactPrefixScan is the compact lookup before the producer-built
 // route LPM. Keeping it test-only makes the end-to-end benchmark comparable
 // without retaining the old path in production.
@@ -224,6 +236,60 @@ func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.RuntimeIP) (*
 		routeIDs, err := matchingMostSpecificIPIDsForTest(context.Background(), transaction.Bucket(boltstore.BucketRouteIndex), address, maxCandidates)
 		if err != nil {
 			return err
+		}
+		for _, id := range routeIDs {
+			record, err := routeLookupByID(transaction, id)
+			if err != nil {
+				return err
+			}
+			routes = append(routes, record)
+		}
+		geofeedIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range geofeedIDs {
+			record, err := geofeedByID(transaction, id)
+			if err != nil {
+				return err
+			}
+			geofeeds = append(geofeeds, record)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{}), nil
+}
+
+// lookupCompactRouteLPMPrefixScan matches the schema-3 compact path: routes
+// use their serialized LPM, while allocations and geofeeds still use bbolt
+// prefix seeks. It isolates the effect of the schema-4 selectors in tests.
+func lookupCompactRouteLPMPrefixScan(repository *BboltRepository, ip ipkey.RuntimeIP) (*LookupResponse, error) {
+	address := ip.Address
+	var allocations []boltstore.Allocation
+	var routes []boltstore.Route
+	var geofeeds []boltstore.Geofeed
+	err := repository.db.View(func(transaction *bbolt.Tx) error {
+		allocationIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
+		if err != nil {
+			return err
+		}
+		for _, id := range allocationIDs {
+			record, err := allocationLookupByID(transaction, id)
+			if err != nil {
+				return err
+			}
+			allocations = append(allocations, record)
+		}
+		routeLPM := transaction.Bucket(boltstore.BucketRouteLPM).Get(boltstore.RouteLPMKey(uint8(ip.Version)))
+		routeIDs, err := boltstore.LookupRouteLPM(routeLPM, address)
+		if err != nil {
+			return err
+		}
+		if len(routeIDs) > maxCandidates {
+			routeIDs = routeIDs[:maxCandidates]
 		}
 		for _, id := range routeIDs {
 			record, err := routeLookupByID(transaction, id)
@@ -333,14 +399,17 @@ func testBboltRepository(tb testingTB) *BboltRepository {
 		{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "1.1.1.0/24", "AS13335", "APNIC", "APNIC", "", "", "abuse@example.test", ""},
 		{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "1.1.1.0/24", "AS64500", "APNIC", "APNIC", "", "", "", ""},
 	})
-	writeTestCSV(tb, filepath.Join(directory, "geolocations.csv"), [][]string{{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "AU", "Queensland", "South Brisbane"}})
+	writeTestCSV(tb, filepath.Join(directory, "geolocations.csv"), [][]string{
+		{sortKey("1.0.0.0"), sortKey("1.255.255.255"), "4", "AU", "New South Wales", "Sydney"},
+		{sortKey("1.1.1.0"), sortKey("1.1.1.255"), "4", "AU", "Queensland", "South Brisbane"},
+	})
 	writeTestCSV(tb, filepath.Join(directory, "autnums.csv"), [][]string{{"AS13335", "APNIC", "US", "CLOUDFLARENET", "ORG-CLOUD14-ARIN", "ASSIGNED", "", "", "APNIC", "", "abuse@example.test", ""}})
 	path := filepath.Join(directory, "mehrnet_bgp.bbolt")
 	stats, err := boltstore.Build(context.Background(), boltstore.BuildOptions{InputDir: directory, OutputPath: path, ReleaseTag: "db-test", BuiltAt: "2026-08-26T00:00:00Z", SourceCommit: "abcdef", Compact: true})
 	if err != nil {
 		tb.Fatal(err)
 	}
-	if stats.Allocations != 2 || stats.Routes != 2 || stats.Geofeeds != 1 || stats.Autnums != 1 || stats.RouteLPMNodes == 0 || stats.RouteLPMIDs != stats.Routes || stats.RouteLPMBytes == 0 {
+	if stats.Allocations != 2 || stats.Routes != 2 || stats.Geofeeds != 2 || stats.Autnums != 1 || stats.RouteLPMNodes == 0 || stats.RouteLPMIDs != stats.Routes || stats.RouteLPMBytes == 0 || stats.AllocationLPMNodes == 0 || stats.AllocationLPMBytes == 0 || stats.GeofeedLPMNodes == 0 || stats.GeofeedLPMBytes == 0 {
 		tb.Fatal("unexpected build stats: ", stats)
 	}
 	repository, err := NewBboltRepository(path)

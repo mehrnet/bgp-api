@@ -60,10 +60,11 @@ const (
 )
 
 type Config struct {
-	AllowedOrigins            map[string]struct{}
-	OriginAuthToken           string
-	Build                     BuildInfo
-	CompactResponseCacheBytes int
+	AllowedOrigins             map[string]struct{}
+	OriginAuthToken            string
+	Build                      BuildInfo
+	CompactResponseCacheBytes  int
+	ResourceResponseCacheBytes int
 }
 
 type nullableString = *string
@@ -175,6 +176,7 @@ type errorResponse struct {
 
 func New(repository Repository, config Config) http.Handler {
 	compactCache := newCompactResponseCache(config.CompactResponseCacheBytes)
+	resourceCache := newResourceResponseCache(config.ResourceResponseCacheBytes)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if config.OriginAuthToken != "" && request.Header.Get("X-BGP-API-Origin-Token") != config.OriginAuthToken {
 			writeError(writer, http.StatusUnauthorized, "UNAUTHORIZED", "origin authorization required")
@@ -203,11 +205,11 @@ func New(repository Repository, config Config) http.Handler {
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/ip":
 			lookupIP(writer, request, repository, compactCache, request.URL.Query().Get("query"))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/prefix":
-			lookupPrefix(writer, request, repository)
+			lookupPrefix(writer, request, repository, resourceCache)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/range":
-			lookupRange(writer, request, repository)
+			lookupRange(writer, request, repository, resourceCache)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/asn":
-			lookupASN(writer, request, repository, request.URL.Query().Get("query"))
+			lookupASN(writer, request, repository, resourceCache, request.URL.Query().Get("query"))
 		default:
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}
@@ -245,7 +247,7 @@ func resourceRepository(writer http.ResponseWriter, repository Repository) (Reso
 	return resources, ok
 }
 
-func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository Repository) {
+func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository Repository, cache *responseCache) {
 	resources, ok := resourceRepository(writer, repository)
 	if !ok {
 		return
@@ -258,6 +260,12 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 	page, valid := requestPage(writer, request)
 	if !valid {
 		return
+	}
+	cacheKey := responseCacheKey("prefix", prefix.Canonical, strconv.Itoa(page.Limit), strconv.FormatInt(page.Cursor, 10))
+	if release, served := acquireCachedResponse(writer, cache, cacheKey); served {
+		return
+	} else {
+		defer release()
 	}
 	response, err := resources.LookupPrefix(request.Context(), prefix, page)
 	if err != nil {
@@ -276,7 +284,7 @@ func lookupPrefix(writer http.ResponseWriter, request *http.Request, repository 
 	if !attachMeta(writer, request, repository, response) {
 		return
 	}
-	writeJSON(writer, http.StatusOK, response)
+	writeAndCacheJSON(writer, cache, cacheKey, response)
 }
 
 func requestRangePage(writer http.ResponseWriter, request *http.Request) (RangePage, bool) {
@@ -296,7 +304,7 @@ func requestRangePage(writer http.ResponseWriter, request *http.Request) (RangeP
 	return page, true
 }
 
-func lookupRange(writer http.ResponseWriter, request *http.Request, repository Repository) {
+func lookupRange(writer http.ResponseWriter, request *http.Request, repository Repository, cache *responseCache) {
 	resources, ok := resourceRepository(writer, repository)
 	if !ok {
 		return
@@ -319,9 +327,19 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 	if !valid {
 		return
 	}
+	cacheKey := responseCacheKey("range", rangeValue.Start.Canonical, rangeValue.End.Canonical, string(kind))
+	_, broad := ipkey.SummaryPrefixKeys(rangeValue)
+	if !broad {
+		cacheKey = responseCacheKey(cacheKey, strconv.Itoa(page.Limit), page.Cursor)
+	}
+	if release, served := acquireCachedResponse(writer, cache, cacheKey); served {
+		return
+	} else {
+		defer release()
+	}
 	var response *RangeResponse
 	var err error
-	if _, broad := ipkey.SummaryPrefixKeys(rangeValue); broad {
+	if broad {
 		response, err = resources.LookupRangeSummary(request.Context(), rangeValue, kind)
 	} else {
 		response, err = resources.LookupRange(request.Context(), rangeValue, kind, page)
@@ -342,10 +360,10 @@ func lookupRange(writer http.ResponseWriter, request *http.Request, repository R
 	if !attachMeta(writer, request, repository, response) {
 		return
 	}
-	writeJSON(writer, http.StatusOK, response)
+	writeAndCacheJSON(writer, cache, cacheKey, response)
 }
 
-func lookupASN(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
+func lookupASN(writer http.ResponseWriter, request *http.Request, repository Repository, cache *responseCache, input string) {
 	resources, ok := resourceRepository(writer, repository)
 	if !ok {
 		return
@@ -358,6 +376,16 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 	page, valid := requestASNPage(writer, request)
 	if !valid {
 		return
+	}
+	pageKey := strconv.FormatInt(page.Cursor, 10)
+	if page.Numbered {
+		pageKey = "page=" + strconv.Itoa(page.Number)
+	}
+	cacheKey := responseCacheKey("asn", strconv.FormatUint(uint64(asn), 10), strconv.Itoa(page.Limit), pageKey)
+	if release, served := acquireCachedResponse(writer, cache, cacheKey); served {
+		return
+	} else {
+		defer release()
 	}
 	response, err := resources.LookupASN(request.Context(), asn, page)
 	if err != nil {
@@ -372,7 +400,7 @@ func lookupASN(writer http.ResponseWriter, request *http.Request, repository Rep
 	if !attachMeta(writer, request, repository, response) {
 		return
 	}
-	writeJSON(writer, http.StatusOK, response)
+	writeAndCacheJSON(writer, cache, cacheKey, response)
 }
 
 func requestPage(writer http.ResponseWriter, request *http.Request) (Page, bool) {
@@ -429,7 +457,7 @@ func parseASN(input string) (uint32, bool) {
 	return uint32(number), true
 }
 
-func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, cache *compactResponseCache, input string) {
+func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, cache *responseCache, input string) {
 	ip, ok := ipkey.ParseRuntime(input)
 	if !ok {
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "query must be a valid IPv4 or IPv6 address")
@@ -440,9 +468,10 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		return
 	}
 	if options.Details == LookupDetailsNone {
-		if cached, ok := cache.Get(ip.Canonical); ok {
-			writeJSONBytes(writer, http.StatusOK, cached)
+		if release, served := acquireCachedResponse(writer, cache, ip.Canonical); served {
 			return
+		} else {
+			defer release()
 		}
 	}
 	response, err := repository.Lookup(request.Context(), ip, options)
@@ -458,15 +487,7 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		return
 	}
 	if options.Details == LookupDetailsNone {
-		body, err := json.Marshal(response)
-		if err != nil {
-			log.Printf("compact IP response encoding failed for %s: %v", ip.Canonical, err)
-			writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected lookup serialization failure")
-			return
-		}
-		body = append(body, '\n')
-		cache.Add(ip.Canonical, body)
-		writeJSONBytes(writer, http.StatusOK, body)
+		writeAndCacheJSON(writer, cache, ip.Canonical, response)
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
@@ -543,6 +564,29 @@ func writeJSONBytes(writer http.ResponseWriter, status int, value []byte) {
 	writer.WriteHeader(status)
 	_, _ = writer.Write(value)
 }
+
+func acquireCachedResponse(writer http.ResponseWriter, cache *responseCache, key string) (release func(), served bool) {
+	value, cached, release := cache.Acquire(key)
+	if cached {
+		writeJSONBytes(writer, http.StatusOK, value)
+		return nil, true
+	}
+	return release, false
+}
+
+func writeAndCacheJSON(writer http.ResponseWriter, cache *responseCache, key string, value any) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		log.Printf("cached response encoding failed for %s: %v", key, err)
+		writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected response serialization failure")
+		return
+	}
+	body = append(body, '\n')
+	cache.Add(key, body)
+	writeJSONBytes(writer, http.StatusOK, body)
+}
+
+func responseCacheKey(parts ...string) string { return strings.Join(parts, "\x00") }
 
 func lower(value nullableString) nullableString {
 	value = present(value)

@@ -56,7 +56,8 @@ func main() {
 			Commit:  stringPointer(commit),
 			BuiltAt: stringPointer(builtAt),
 		},
-		CompactResponseCacheBytes: environmentInt("BGP_API_COMPACT_CACHE_MIB", 256) << 20,
+		CompactResponseCacheBytes:  environmentInt("BGP_API_COMPACT_CACHE_MIB", 256) << 20,
+		ResourceResponseCacheBytes: environmentInt("BGP_API_RESOURCE_CACHE_MIB", 64) << 20,
 	}
 	handler := api.New(store, config)
 	server := &http.Server{

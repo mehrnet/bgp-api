@@ -28,10 +28,12 @@ func (values *headerValues) Set(value string) error {
 
 func main() {
 	var target, connectIP string
+	var disableCompression bool
 	var requests, concurrency, warmup int
 	var headers headerValues
 	flag.StringVar(&target, "url", "", "absolute HTTP(S) endpoint")
 	flag.StringVar(&connectIP, "connect-ip", "", "override the target hostname's TCP destination while preserving the URL host and HTTPS SNI")
+	flag.BoolVar(&disableCompression, "disable-compression", false, "do not request compressed responses")
 	flag.IntVar(&requests, "requests", 5000, "measured request count")
 	flag.IntVar(&concurrency, "concurrency", 32, "parallel request count")
 	flag.IntVar(&warmup, "warmup", 200, "unmeasured warmup requests")
@@ -60,6 +62,7 @@ func main() {
 	transport.MaxIdleConns = concurrency * 2
 	transport.MaxIdleConnsPerHost = concurrency * 2
 	transport.MaxConnsPerHost = concurrency * 2
+	transport.DisableCompression = disableCompression
 	if connectIP != "" {
 		configureDialOverride(transport, targetURL, connectIP)
 	}
@@ -109,6 +112,7 @@ func main() {
 		fmt.Printf("connect_ip: %s (TLS SNI and Host remain %s)\n", connectIP, targetURL.Hostname())
 	}
 	fmt.Printf("requests: %d  concurrency: %d  keep_alive: true  warmup: %d\n", requests, concurrency, warmup)
+	fmt.Printf("compression: %t\n", !disableCompression)
 	fmt.Printf("throughput: %.1f req/s\n", float64(requests)/elapsed.Seconds())
 	fmt.Printf("latency_ms: min=%.3f avg=%.3f p50=%.3f p95=%.3f p99=%.3f max=%.3f\n",
 		milliseconds(durations[0]),

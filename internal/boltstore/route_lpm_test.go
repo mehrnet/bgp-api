@@ -12,11 +12,11 @@ func TestRouteLPMResolvesMostSpecificIPv4AndIPv6Prefixes(t *testing.T) {
 		version uint8
 		entries []struct {
 			prefix string
-			ids    []uint64
+			ids    []uint32
 		}
 		queries []struct {
 			address string
-			ids     []uint64
+			ids     []uint32
 		}
 	}{
 		{
@@ -24,21 +24,21 @@ func TestRouteLPMResolvesMostSpecificIPv4AndIPv6Prefixes(t *testing.T) {
 			version: 4,
 			entries: []struct {
 				prefix string
-				ids    []uint64
+				ids    []uint32
 			}{
-				{"0.0.0.0/0", []uint64{1}},
-				{"1.0.0.0/8", []uint64{2}},
-				{"1.1.0.0/16", []uint64{3}},
-				{"1.1.1.0/24", []uint64{4, 5}},
+				{"0.0.0.0/0", []uint32{1}},
+				{"1.0.0.0/8", []uint32{2}},
+				{"1.1.0.0/16", []uint32{3}},
+				{"1.1.1.0/24", []uint32{4, 5}},
 			},
 			queries: []struct {
 				address string
-				ids     []uint64
+				ids     []uint32
 			}{
-				{"1.1.1.9", []uint64{4, 5}},
-				{"1.1.2.9", []uint64{3}},
-				{"1.2.2.9", []uint64{2}},
-				{"2.2.2.2", []uint64{1}},
+				{"1.1.1.9", []uint32{4, 5}},
+				{"1.1.2.9", []uint32{3}},
+				{"1.2.2.9", []uint32{2}},
+				{"2.2.2.2", []uint32{1}},
 			},
 		},
 		{
@@ -46,19 +46,19 @@ func TestRouteLPMResolvesMostSpecificIPv4AndIPv6Prefixes(t *testing.T) {
 			version: 6,
 			entries: []struct {
 				prefix string
-				ids    []uint64
+				ids    []uint32
 			}{
-				{"::/0", []uint64{10}},
-				{"2001:db8::/32", []uint64{11}},
-				{"2001:db8:1234::/48", []uint64{12}},
+				{"::/0", []uint32{10}},
+				{"2001:db8::/32", []uint32{11}},
+				{"2001:db8:1234::/48", []uint32{12}},
 			},
 			queries: []struct {
 				address string
-				ids     []uint64
+				ids     []uint32
 			}{
-				{"2001:db8:1234::1", []uint64{12}},
-				{"2001:db8:9876::1", []uint64{11}},
-				{"2001:4860::1", []uint64{10}},
+				{"2001:db8:1234::1", []uint32{12}},
+				{"2001:db8:9876::1", []uint32{11}},
+				{"2001:4860::1", []uint32{10}},
 			},
 		},
 	} {
@@ -91,7 +91,7 @@ func TestRouteLPMResolvesMostSpecificIPv4AndIPv6Prefixes(t *testing.T) {
 
 func TestRouteLPMRejectsInvalidInputs(t *testing.T) {
 	builder := newRouteLPMBuilder(4)
-	if err := builder.Insert(netip.MustParsePrefix("2001:db8::/32"), []uint64{1}); err == nil {
+	if err := builder.Insert(netip.MustParsePrefix("2001:db8::/32"), []uint32{1}); err == nil {
 		t.Fatal("accepted IPv6 prefix in IPv4 LPM")
 	}
 	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), nil); err == nil {
@@ -99,11 +99,5 @@ func TestRouteLPMRejectsInvalidInputs(t *testing.T) {
 	}
 	if _, err := LookupRouteLPM(nil, netip.MustParseAddr("1.1.1.1")); err == nil {
 		t.Fatal("accepted empty LPM payload")
-	}
-	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), []uint64{uint64(^uint32(0)) + 1}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := builder.Encode(); err == nil {
-		t.Fatal("accepted route ID outside uint32")
 	}
 }

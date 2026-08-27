@@ -45,7 +45,7 @@ func newSelectionLPMBuilder(version uint8) *selectionLPMBuilder {
 	}
 }
 
-func (builder *selectionLPMBuilder) Insert(prefix netip.Prefix, id uint64, start, end Address) error {
+func (builder *selectionLPMBuilder) Insert(prefix netip.Prefix, id uint32, start, end Address) error {
 	prefix = prefix.Masked()
 	if builder.version == 4 && !prefix.Addr().Is4() {
 		return errors.New("IPv6 prefix added to IPv4 selection LPM")
@@ -56,10 +56,7 @@ func (builder *selectionLPMBuilder) Insert(prefix netip.Prefix, id uint64, start
 	if id == 0 {
 		return errors.New("selection LPM record has no ID")
 	}
-	if id > uint64(^uint32(0)) {
-		return errors.New("selection LPM record ID exceeds uint32")
-	}
-	candidate := selectionCandidate{id: uint32(id), width: selectionRangeWidth(start, end)}
+	candidate := selectionCandidate{id: id, width: selectionRangeWidth(start, end)}
 	address := AddressFromAddr(prefix.Addr())
 	root, err := builder.insert(1, address, uint8(prefix.Bits()), candidate)
 	if err != nil {
@@ -160,7 +157,7 @@ func (builder *selectionLPMBuilder) Encode() ([]byte, SelectionLPMStats, error) 
 
 // LookupSelectionLPM returns the same allocation or geofeed record that the
 // compact API would select after examining every matching source range.
-func LookupSelectionLPM(value []byte, address netip.Addr) (uint64, error) {
+func LookupSelectionLPM(value []byte, address netip.Addr) (uint32, error) {
 	version := uint8(6)
 	if address.Is4() {
 		version = 4
@@ -218,7 +215,7 @@ func LookupSelectionLPM(value []byte, address netip.Addr) (uint64, error) {
 		}
 		current = next - 1
 	}
-	return uint64(bestID), nil
+	return bestID, nil
 }
 
 func selectionLPMNodeLayout(version uint8) (nodeSize, addressBytes int, err error) {

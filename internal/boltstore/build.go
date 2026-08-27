@@ -53,8 +53,15 @@ type summaryKey struct {
 type builder struct {
 	db        *bbolt.DB
 	stats     BuildStats
-	asnRoutes map[uint32][]uint64
+	asnRoutes map[uint32][]uint32
 	summaries map[summaryKey]*summaryAccumulator
+}
+
+func nextRecordID(count uint64) (uint32, error) {
+	if count >= uint64(^uint32(0)) {
+		return 0, errors.New("bbolt source record count exceeds uint32")
+	}
+	return uint32(count + 1), nil
 }
 
 func Build(ctx context.Context, options BuildOptions) (BuildStats, error) {
@@ -86,7 +93,7 @@ func Build(ctx context.Context, options BuildOptions) (BuildStats, error) {
 	if err != nil {
 		return BuildStats{}, err
 	}
-	build := &builder{db: db, asnRoutes: make(map[uint32][]uint64), summaries: make(map[summaryKey]*summaryAccumulator)}
+	build := &builder{db: db, asnRoutes: make(map[uint32][]uint32), summaries: make(map[summaryKey]*summaryAccumulator)}
 	failed := true
 	defer func() {
 		_ = db.Close()
@@ -199,7 +206,10 @@ func (build *builder) allocations(ctx context.Context, path string) error {
 				if !ok {
 					continue
 				}
-				id := build.stats.Allocations + 1
+				id, err := nextRecordID(build.stats.Allocations)
+				if err != nil {
+					return err
+				}
 				record := Allocation{Start: start, End: end, Version: version, Registry: at(row, 3), Country: at(row, 4), Name: at(row, 5), Status: at(row, 6), AllocationDate: at(row, 7), Created: at(row, 8), LastModified: at(row, 9), Source: at(row, 10), Maintainers: at(row, 11), Organization: at(row, 12), AbuseContact: at(row, 13), Description: at(row, 14)}
 				if err := objects.Put(IDKey(id), EncodeAllocation(record)); err != nil {
 					return err
@@ -219,7 +229,7 @@ func (build *builder) allocations(ctx context.Context, path string) error {
 					build.stats.AllocationIndex++
 				}
 				build.collectSummary(start, end, int(version), false, record.Country)
-				build.stats.Allocations = id
+				build.stats.Allocations = uint64(id)
 			}
 			return nil
 		})
@@ -251,7 +261,10 @@ func (build *builder) routes(ctx context.Context, path string) error {
 					continue
 				}
 				asn := parseASN(origin)
-				id := build.stats.Routes + 1
+				id, err := nextRecordID(build.stats.Routes)
+				if err != nil {
+					return err
+				}
 				record := Route{Network: AddressFromAddr(prefix.Addr()), Version: version, PrefixLength: uint8(prefix.Bits()), ASNumber: asn, OriginASN: origin, Registry: at(row, 5), Source: at(row, 6), Maintainers: at(row, 7), Organization: at(row, 8), AbuseContact: at(row, 9), Description: at(row, 10)}
 				if err := objects.Put(IDKey(id), EncodeRoute(record)); err != nil {
 					return err
@@ -269,7 +282,7 @@ func (build *builder) routes(ctx context.Context, path string) error {
 				build.collectSummary(start, end, int(version), true, record.OriginASN)
 				build.stats.RouteIndex++
 				build.stats.RouteRangeIndex++
-				build.stats.Routes = id
+				build.stats.Routes = uint64(id)
 			}
 			return nil
 		})
@@ -288,7 +301,10 @@ func (build *builder) geofeeds(ctx context.Context, path string) error {
 				if !ok {
 					continue
 				}
-				id := build.stats.Geofeeds + 1
+				id, err := nextRecordID(build.stats.Geofeeds)
+				if err != nil {
+					return err
+				}
 				record := Geofeed{Start: start, End: end, Version: version, Country: at(row, 3), Region: at(row, 4), City: at(row, 5)}
 				if err := objects.Put(IDKey(id), EncodeGeofeed(record)); err != nil {
 					return err
@@ -303,7 +319,7 @@ func (build *builder) geofeeds(ctx context.Context, path string) error {
 					}
 					build.stats.GeofeedIndex++
 				}
-				build.stats.Geofeeds = id
+				build.stats.Geofeeds = uint64(id)
 			}
 			return nil
 		})
@@ -374,10 +390,10 @@ func (build *builder) writeSelectionLPM(ctx context.Context, version uint8, obje
 			if err := contextError(ctx); err != nil {
 				return err
 			}
-			if len(key) != 8 {
+			if len(key) != IDKeySize {
 				return errors.New("invalid selection LPM object ID")
 			}
-			id := binary.BigEndian.Uint64(key)
+			id := binary.BigEndian.Uint32(key)
 			var recordVersion uint8
 			var start, end Address
 			var err error
@@ -460,7 +476,7 @@ func (build *builder) writeRouteLPM(ctx context.Context, version uint8) error {
 		cursor := index.Cursor()
 		seek := []byte{version}
 		var currentPrefix [PrefixKeySize]byte
-		var ids []uint64
+		var ids []uint32
 		havePrefix := false
 		flush := func() error {
 			if !havePrefix {

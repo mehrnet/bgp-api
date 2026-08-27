@@ -354,7 +354,7 @@ func BenchmarkBboltRoutePrefixScan(b *testing.B) {
 	}
 }
 
-func matchingMostSpecificIPIDsForTest(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint64, error) {
+func matchingMostSpecificIPIDsForTest(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint32, error) {
 	bits := 128
 	if address.Is4() {
 		bits = 32
@@ -366,7 +366,7 @@ func matchingMostSpecificIPIDsForTest(ctx context.Context, index *bbolt.Bucket, 
 			return nil, err
 		}
 		base := boltstore.PutPrefixKey(seek[:], netip.PrefixFrom(address, length))
-		ids := make([]uint64, 0)
+		ids := make([]uint32, 0)
 		for key, _ := cursor.Seek(seek[:]); len(key) == boltstore.IndexKeySize && bytes.Equal(key[:boltstore.PrefixKeySize], base); key, _ = cursor.Next() {
 			id, _ := boltstore.IndexID(key)
 			ids = append(ids, id)

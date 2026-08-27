@@ -31,7 +31,7 @@ func TestSelectionLPMChoosesCompactResponseRecord(t *testing.T) {
 	}
 	for _, test := range []struct {
 		address string
-		want    uint64
+		want    uint32
 	}{
 		{"1.1.1.1", 3},
 		{"1.2.1.1", 2},
@@ -74,15 +74,12 @@ func TestSelectionLPMRejectsInvalidInputs(t *testing.T) {
 	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), 0, Address{}, Address{}); err == nil {
 		t.Fatal("accepted zero selector ID")
 	}
-	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), uint64(^uint32(0))+1, Address{}, Address{}); err == nil {
-		t.Fatal("accepted selector ID outside uint32")
-	}
 	if _, err := LookupSelectionLPM(nil, netip.MustParseAddr("1.1.1.1")); err == nil {
 		t.Fatal("accepted empty selector payload")
 	}
 }
 
-func insertSelectionRange(t *testing.T, builder *selectionLPMBuilder, id uint64, startValue, endValue string) {
+func insertSelectionRange(t *testing.T, builder *selectionLPMBuilder, id uint32, startValue, endValue string) {
 	t.Helper()
 	start, end := AddressFromAddr(netip.MustParseAddr(startValue)), AddressFromAddr(netip.MustParseAddr(endValue))
 	prefixes, err := rangePrefixes(start, end, int(builder.version))

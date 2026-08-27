@@ -180,12 +180,13 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
 | `BGP_API_COMPACT_CACHE_MIB` | `256` | In-process cache budget for default IP responses |
+| `BGP_API_RESOURCE_CACHE_MIB` | `64` | In-process cache budget for prefix, range, and ASN responses |
 | `GOMAXPROCS` | Go default | CPU limit |
 | `GOMEMLIMIT` | Go default | Soft Go heap limit |
 
-The installer uses `GOMAXPROCS=2`, `GOMEMLIMIT=384MiB`, and a `256 MiB` compact-response
-cache by default. bbolt maps the database read-only, so the operating system can reclaim
-database pages when needed.
+The installer uses `GOMAXPROCS=2`, `GOMEMLIMIT=384MiB`, a `256 MiB` IP-response cache,
+and a `64 MiB` resource-response cache by default. bbolt maps the database read-only, so
+the operating system can reclaim database pages when needed.
 
 ## Releases and datasets
 

@@ -28,7 +28,7 @@ type routeLPMNode struct {
 	prefix       Address
 	prefixLength uint8
 	children     [2]uint32 // one-based node indexes; zero means absent
-	ids          []uint64
+	ids          []uint32
 }
 
 // routeLPMBuilder builds a Patricia trie from sorted or unsorted route-prefix
@@ -46,7 +46,7 @@ func newRouteLPMBuilder(version uint8) *routeLPMBuilder {
 	}
 }
 
-func (builder *routeLPMBuilder) Insert(prefix netip.Prefix, ids []uint64) error {
+func (builder *routeLPMBuilder) Insert(prefix netip.Prefix, ids []uint32) error {
 	prefix = prefix.Masked()
 	if builder.version == 4 && !prefix.Addr().Is4() {
 		return errors.New("IPv6 prefix added to IPv4 route LPM")
@@ -68,7 +68,7 @@ func (builder *routeLPMBuilder) Insert(prefix netip.Prefix, ids []uint64) error 
 	return nil
 }
 
-func (builder *routeLPMBuilder) insert(reference uint32, prefix Address, prefixLength uint8, ids []uint64) (uint32, error) {
+func (builder *routeLPMBuilder) insert(reference uint32, prefix Address, prefixLength uint8, ids []uint32) (uint32, error) {
 	if reference == 0 {
 		return builder.appendNode(routeLPMNode{prefix: maskedRouteLPMAddress(prefix, builder.version, int(prefixLength)), prefixLength: prefixLength, ids: ids})
 	}
@@ -155,10 +155,10 @@ func (builder *routeLPMBuilder) Encode() ([]byte, RouteLPMStats, error) {
 		binary.BigEndian.PutUint32(encoded[nodeOffset+25:nodeOffset+29], idOffset)
 		binary.BigEndian.PutUint32(encoded[nodeOffset+29:nodeOffset+33], uint32(len(node.ids)))
 		for _, id := range node.ids {
-			if id == 0 || id > uint64(^uint32(0)) {
-				return nil, RouteLPMStats{}, errors.New("route LPM record ID exceeds uint32")
+			if id == 0 {
+				return nil, RouteLPMStats{}, errors.New("route LPM record has no ID")
 			}
-			binary.BigEndian.PutUint32(encoded[idsOffset:idsOffset+4], uint32(id))
+			binary.BigEndian.PutUint32(encoded[idsOffset:idsOffset+4], id)
 			idsOffset += 4
 		}
 		idOffset += uint32(len(node.ids))
@@ -177,7 +177,7 @@ func RouteLPMKey(version uint8) []byte {
 // LookupRouteLPM resolves the most-specific matching route prefix from the
 // serialized immutable trie. It returns every route object registered at that
 // prefix, preserving multi-origin route responses.
-func LookupRouteLPM(value []byte, address netip.Addr) ([]uint64, error) {
+func LookupRouteLPM(value []byte, address netip.Addr) ([]uint32, error) {
 	version := uint8(6)
 	if address.Is4() {
 		version = 4
@@ -229,9 +229,9 @@ func LookupRouteLPM(value []byte, address netip.Addr) ([]uint64, error) {
 		return nil, errors.New("route LPM route ID range is invalid")
 	}
 	idsOffset := routeLPMHeaderSize + int(nodeCount)*routeLPMNodeSize + int(bestOffset)*4
-	result := make([]uint64, bestCount)
+	result := make([]uint32, bestCount)
 	for index := range result {
-		result[index] = uint64(binary.BigEndian.Uint32(value[idsOffset+index*4 : idsOffset+index*4+4]))
+		result[index] = binary.BigEndian.Uint32(value[idsOffset+index*4 : idsOffset+index*4+4])
 	}
 	return result, nil
 }

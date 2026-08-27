@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mehrnet/bgp-api/internal/ipkey"
@@ -164,6 +166,34 @@ type countingRepository struct {
 	lookups int
 }
 
+type countingResourceRepository struct {
+	resourceFakeRepository
+	prefixCalls       int
+	rangeCalls        int
+	rangeSummaryCalls int
+	asnCalls          int
+}
+
+func (repository *countingResourceRepository) LookupPrefix(ctx context.Context, prefix ipkey.ParsedPrefix, page Page) (*PrefixResponse, error) {
+	repository.prefixCalls++
+	return repository.resourceFakeRepository.LookupPrefix(ctx, prefix, page)
+}
+
+func (repository *countingResourceRepository) LookupRange(ctx context.Context, value ipkey.ParsedRange, kind RangeKind, page RangePage) (*RangeResponse, error) {
+	repository.rangeCalls++
+	return repository.resourceFakeRepository.LookupRange(ctx, value, kind, page)
+}
+
+func (repository *countingResourceRepository) LookupRangeSummary(ctx context.Context, value ipkey.ParsedRange, kind RangeKind) (*RangeResponse, error) {
+	repository.rangeSummaryCalls++
+	return repository.resourceFakeRepository.LookupRangeSummary(ctx, value, kind)
+}
+
+func (repository *countingResourceRepository) LookupASN(ctx context.Context, asn uint32, page Page) (*ASNResponse, error) {
+	repository.asnCalls++
+	return repository.resourceFakeRepository.LookupASN(ctx, asn, page)
+}
+
 func (repository *countingRepository) Lookup(ctx context.Context, ip ipkey.RuntimeIP, options LookupOptions) (*LookupResponse, error) {
 	repository.lookups++
 	return repository.fakeRepository.Lookup(ctx, ip, options)
@@ -184,6 +214,64 @@ func TestHandlerCachesOnlyDefaultCompactIPResponses(t *testing.T) {
 	handler.ServeHTTP(full, httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&details=full", nil))
 	if repository.lookups != 2 {
 		t.Fatalf("details=full lookup count = %d", repository.lookups)
+	}
+}
+
+func TestHandlerCachesCanonicalResourceResponses(t *testing.T) {
+	repository := &countingResourceRepository{}
+	handler := New(repository, Config{ResourceResponseCacheBytes: 1 << 20})
+	for _, path := range []string{
+		"/v1/prefix?prefix=1.1.1.42/24&limit=10",
+		"/v1/range?start=1.1.1.1&end=1.1.1.2&limit=10",
+		"/v1/range?start=80.0.0.0&end=80.255.255.255",
+		"/v1/asn?query=AS13335&limit=10&page=1",
+	} {
+		for range 2 {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s: status = %d, body = %s", path, response.Code, response.Body.String())
+			}
+		}
+	}
+	if repository.prefixCalls != 1 || repository.rangeCalls != 1 || repository.rangeSummaryCalls != 1 || repository.asnCalls != 1 {
+		t.Fatalf("resource calls = prefix:%d range:%d summary:%d asn:%d", repository.prefixCalls, repository.rangeCalls, repository.rangeSummaryCalls, repository.asnCalls)
+	}
+}
+
+func TestResponseCacheCollapsesConcurrentMisses(t *testing.T) {
+	cache := newResponseCache(1<<20, 1<<20, 1<<10)
+	start := make(chan struct{})
+	leaderStarted := make(chan struct{})
+	allowLeader := make(chan struct{})
+	var producers atomic.Int32
+	var group sync.WaitGroup
+	for range 16 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			value, cached, release := cache.Acquire("query")
+			if cached {
+				if string(value) != "body" {
+					t.Errorf("cached value = %q", value)
+				}
+				return
+			}
+			if producers.Add(1) == 1 {
+				close(leaderStarted)
+			}
+			<-allowLeader
+			cache.Add("query", []byte("body"))
+			release()
+		}()
+	}
+	close(start)
+	<-leaderStarted
+	close(allowLeader)
+	group.Wait()
+	if producers.Load() != 1 {
+		t.Fatalf("producers = %d", producers.Load())
 	}
 }
 

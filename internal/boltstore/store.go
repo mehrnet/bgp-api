@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	SchemaVersion     = 5
+	SchemaVersion     = 6
+	IDKeySize         = 4
 	PrefixKeySize     = 18
-	IndexKeySize      = PrefixKeySize + 8
-	RangeIndexKeySize = 1 + 16 + 16 + 8
+	IndexKeySize      = PrefixKeySize + IDKeySize
+	RangeIndexKeySize = 1 + 16 + 16 + IDKeySize
 )
 
 var (
@@ -99,9 +100,9 @@ func (value Address) Addr(version int) netip.Addr {
 	return netip.AddrFrom16([16]byte(value))
 }
 
-func IDKey(id uint64) []byte {
-	key := make([]byte, 8)
-	binary.BigEndian.PutUint64(key, id)
+func IDKey(id uint32) []byte {
+	key := make([]byte, IDKeySize)
+	binary.BigEndian.PutUint32(key, id)
 	return key
 }
 
@@ -133,36 +134,36 @@ func PutPrefixKey(key []byte, prefix netip.Prefix) []byte {
 	return key[:PrefixKeySize]
 }
 
-func IndexKey(prefix netip.Prefix, id uint64) []byte {
+func IndexKey(prefix netip.Prefix, id uint32) []byte {
 	key := make([]byte, IndexKeySize)
 	copy(key, PrefixKey(prefix))
-	binary.BigEndian.PutUint64(key[PrefixKeySize:], id)
+	binary.BigEndian.PutUint32(key[PrefixKeySize:], id)
 	return key
 }
 
-func IndexID(key []byte) (uint64, bool) {
+func IndexID(key []byte) (uint32, bool) {
 	if len(key) != IndexKeySize {
 		return 0, false
 	}
-	return binary.BigEndian.Uint64(key[PrefixKeySize:]), true
+	return binary.BigEndian.Uint32(key[PrefixKeySize:]), true
 }
 
 // RangeIndexKey orders original source records by IP version, start address,
 // end address, and stable record ID. It allows a range page to seek directly
 // to its next record instead of rebuilding a full overlap result set.
-func RangeIndexKey(version uint8, start, end Address, id uint64) []byte {
+func RangeIndexKey(version uint8, start, end Address, id uint32) []byte {
 	key := make([]byte, RangeIndexKeySize)
 	return PutRangeIndexKey(key, version, start, end, id)
 }
 
-func PutRangeIndexKey(key []byte, version uint8, start, end Address, id uint64) []byte {
+func PutRangeIndexKey(key []byte, version uint8, start, end Address, id uint32) []byte {
 	if len(key) < RangeIndexKeySize {
 		panic("bbolt range index key buffer is too small")
 	}
 	key[0] = version
 	copy(key[1:17], start[:])
 	copy(key[17:33], end[:])
-	binary.BigEndian.PutUint64(key[33:41], id)
+	binary.BigEndian.PutUint32(key[33:37], id)
 	return key[:RangeIndexKeySize]
 }
 
@@ -185,28 +186,28 @@ func RangeIndexStart(key []byte) (Address, bool) {
 	return start, true
 }
 
-func RangeIndexID(key []byte) (uint64, bool) {
+func RangeIndexID(key []byte) (uint32, bool) {
 	if len(key) != RangeIndexKeySize {
 		return 0, false
 	}
-	return binary.BigEndian.Uint64(key[33:41]), true
+	return binary.BigEndian.Uint32(key[33:37]), true
 }
 
-func EncodeIDs(ids []uint64) []byte {
-	value := make([]byte, len(ids)*8)
+func EncodeIDs(ids []uint32) []byte {
+	value := make([]byte, len(ids)*IDKeySize)
 	for index, id := range ids {
-		binary.BigEndian.PutUint64(value[index*8:], id)
+		binary.BigEndian.PutUint32(value[index*IDKeySize:], id)
 	}
 	return value
 }
 
-func DecodeIDs(value []byte) ([]uint64, error) {
-	if len(value)%8 != 0 {
+func DecodeIDs(value []byte) ([]uint32, error) {
+	if len(value)%IDKeySize != 0 {
 		return nil, errors.New("invalid ID list")
 	}
-	ids := make([]uint64, len(value)/8)
+	ids := make([]uint32, len(value)/IDKeySize)
 	for index := range ids {
-		ids[index] = binary.BigEndian.Uint64(value[index*8:])
+		ids[index] = binary.BigEndian.Uint32(value[index*IDKeySize:])
 	}
 	return ids, nil
 }

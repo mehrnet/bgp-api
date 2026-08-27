@@ -515,7 +515,7 @@ type rangeCursor struct {
 }
 
 type rangeIndexEntry struct {
-	id  uint64
+	id  uint32
 	key [boltstore.RangeIndexKeySize]byte
 }
 
@@ -592,7 +592,7 @@ func coveringRangeEntries(ctx context.Context, tx *bbolt.Tx, pointIndex *bbolt.B
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[uint64]struct{}, len(ids))
+	seen := make(map[uint32]struct{}, len(ids))
 	entries := make([]rangeIndexEntry, 0, len(ids))
 	for _, id := range ids {
 		if _, ok := seen[id]; ok {
@@ -611,7 +611,7 @@ func coveringRangeEntries(ctx context.Context, tx *bbolt.Tx, pointIndex *bbolt.B
 	return entries, nil
 }
 
-func coveringRangeEntry(tx *bbolt.Tx, kind RangeKind, id uint64, queryStart boltstore.Address) (rangeIndexEntry, bool, error) {
+func coveringRangeEntry(tx *bbolt.Tx, kind RangeKind, id uint32, queryStart boltstore.Address) (rangeIndexEntry, bool, error) {
 	var start, end boltstore.Address
 	var version uint8
 	if kind == RangeAllocations {
@@ -791,10 +791,10 @@ func (repository *BboltRepository) LookupASN(ctx context.Context, asn uint32, pa
 			autnum = &object
 		}
 		rawIDs := tx.Bucket(boltstore.BucketASNRoutes).Get(boltstore.ASNKey(asn))
-		if len(rawIDs)%8 != 0 {
+		if len(rawIDs)%boltstore.IDKeySize != 0 {
 			return fmt.Errorf("invalid ASN route list")
 		}
-		total = int64(len(rawIDs) / 8)
+		total = int64(len(rawIDs) / boltstore.IDKeySize)
 		start := 0
 		if page.Numbered {
 			start64 := int64(page.Number-1) * int64(page.Limit)
@@ -804,7 +804,9 @@ func (repository *BboltRepository) LookupASN(ctx context.Context, asn uint32, pa
 				start = int(total)
 			}
 		} else if page.Cursor > 0 {
-			start = sort.Search(int(total), func(index int) bool { return binary.BigEndian.Uint64(rawIDs[index*8:]) > uint64(page.Cursor) })
+			start = sort.Search(int(total), func(index int) bool {
+				return int64(binary.BigEndian.Uint32(rawIDs[index*boltstore.IDKeySize:])) > page.Cursor
+			})
 		}
 		end := start + page.Limit
 		if !page.Numbered {
@@ -817,7 +819,7 @@ func (repository *BboltRepository) LookupASN(ctx context.Context, asn uint32, pa
 			if err := contextError(ctx); err != nil {
 				return err
 			}
-			id := binary.BigEndian.Uint64(rawIDs[index*8:])
+			id := binary.BigEndian.Uint32(rawIDs[index*boltstore.IDKeySize:])
 			record, err := routeByID(tx, id)
 			if err != nil {
 				return err
@@ -842,12 +844,12 @@ func (repository *BboltRepository) LookupASN(ctx context.Context, asn uint32, pa
 	return response, nil
 }
 
-func matchingIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint64, error) {
+func matchingIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr, limit int) ([]uint32, error) {
 	bits := 128
 	if address.Is4() {
 		bits = 32
 	}
-	ids := make([]uint64, 0)
+	ids := make([]uint32, 0)
 	cursor := index.Cursor()
 	var seek [boltstore.IndexKeySize]byte
 	for length := bits; length >= 0 && (limit == 0 || len(ids) < limit); length-- {
@@ -863,14 +865,14 @@ func matchingIPIDs(ctx context.Context, index *bbolt.Bucket, address netip.Addr,
 	return ids, nil
 }
 
-func overlapIDs(ctx context.Context, index *bbolt.Bucket, startValue, endValue ipkey.Parsed, after int64) ([]uint64, error) {
+func overlapIDs(ctx context.Context, index *bbolt.Bucket, startValue, endValue ipkey.Parsed, after int64) ([]uint32, error) {
 	startAddress := boltstore.AddressFromAddr(netip.MustParseAddr(startValue.Canonical))
 	endAddress := boltstore.AddressFromAddr(netip.MustParseAddr(endValue.Canonical))
 	version := byte(startValue.Version)
-	ids := make(map[uint64]struct{})
+	ids := make(map[uint32]struct{})
 	scanned := 0
-	add := func(id uint64) {
-		if id > uint64(after) {
+	add := func(id uint32) {
+		if int64(id) > after {
 			ids[id] = struct{}{}
 		}
 	}
@@ -914,7 +916,7 @@ func overlapIDs(ctx context.Context, index *bbolt.Bucket, startValue, endValue i
 			}
 		}
 	}
-	result := make([]uint64, 0, len(ids))
+	result := make([]uint32, 0, len(ids))
 	for id := range ids {
 		result = append(result, id)
 	}
@@ -929,7 +931,7 @@ func coveringAllocation(ctx context.Context, tx *bbolt.Tx, prefix ipkey.ParsedPr
 	}
 	start, end := boltstore.AddressFromAddr(netip.MustParseAddr(prefix.Start.Canonical)), boltstore.AddressFromAddr(netip.MustParseAddr(prefix.End.Canonical))
 	var selected boltstore.Allocation
-	var selectedID uint64
+	var selectedID uint32
 	for _, id := range ids {
 		record, err := allocationByID(tx, id)
 		if err != nil {
@@ -949,9 +951,9 @@ func coveringAllocation(ctx context.Context, tx *bbolt.Tx, prefix ipkey.ParsedPr
 	return &object, nil
 }
 
-func allocationByID(tx *bbolt.Tx, id uint64) (boltstore.Allocation, error) {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], id)
+func allocationByID(tx *bbolt.Tx, id uint32) (boltstore.Allocation, error) {
+	var key [boltstore.IDKeySize]byte
+	binary.BigEndian.PutUint32(key[:], id)
 	raw := tx.Bucket(boltstore.BucketAllocations).Get(key[:])
 	if raw == nil {
 		return boltstore.Allocation{}, fmt.Errorf("allocation %d is missing", id)
@@ -959,9 +961,9 @@ func allocationByID(tx *bbolt.Tx, id uint64) (boltstore.Allocation, error) {
 	return boltstore.DecodeAllocation(raw)
 }
 
-func allocationLookupByID(tx *bbolt.Tx, id uint64) (boltstore.Allocation, error) {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], id)
+func allocationLookupByID(tx *bbolt.Tx, id uint32) (boltstore.Allocation, error) {
+	var key [boltstore.IDKeySize]byte
+	binary.BigEndian.PutUint32(key[:], id)
 	raw := tx.Bucket(boltstore.BucketAllocations).Get(key[:])
 	if raw == nil {
 		return boltstore.Allocation{}, fmt.Errorf("allocation %d is missing", id)
@@ -969,9 +971,9 @@ func allocationLookupByID(tx *bbolt.Tx, id uint64) (boltstore.Allocation, error)
 	return boltstore.DecodeAllocationLookup(raw)
 }
 
-func routeByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], id)
+func routeByID(tx *bbolt.Tx, id uint32) (boltstore.Route, error) {
+	var key [boltstore.IDKeySize]byte
+	binary.BigEndian.PutUint32(key[:], id)
 	raw := tx.Bucket(boltstore.BucketRoutes).Get(key[:])
 	if raw == nil {
 		return boltstore.Route{}, fmt.Errorf("route %d is missing", id)
@@ -979,9 +981,9 @@ func routeByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
 	return boltstore.DecodeRoute(raw)
 }
 
-func routeLookupByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], id)
+func routeLookupByID(tx *bbolt.Tx, id uint32) (boltstore.Route, error) {
+	var key [boltstore.IDKeySize]byte
+	binary.BigEndian.PutUint32(key[:], id)
 	raw := tx.Bucket(boltstore.BucketRoutes).Get(key[:])
 	if raw == nil {
 		return boltstore.Route{}, fmt.Errorf("route %d is missing", id)
@@ -989,9 +991,9 @@ func routeLookupByID(tx *bbolt.Tx, id uint64) (boltstore.Route, error) {
 	return boltstore.DecodeRouteLookup(raw)
 }
 
-func geofeedByID(tx *bbolt.Tx, id uint64) (boltstore.Geofeed, error) {
-	var key [8]byte
-	binary.BigEndian.PutUint64(key[:], id)
+func geofeedByID(tx *bbolt.Tx, id uint32) (boltstore.Geofeed, error) {
+	var key [boltstore.IDKeySize]byte
+	binary.BigEndian.PutUint32(key[:], id)
 	raw := tx.Bucket(boltstore.BucketGeofeeds).Get(key[:])
 	if raw == nil {
 		return boltstore.Geofeed{}, fmt.Errorf("geofeed %d is missing", id)
@@ -999,11 +1001,11 @@ func geofeedByID(tx *bbolt.Tx, id uint64) (boltstore.Geofeed, error) {
 	return boltstore.DecodeGeofeed(raw)
 }
 
-func allocationObject(id uint64, value boltstore.Allocation) AllocationObject {
+func allocationObject(id uint32, value boltstore.Allocation) AllocationObject {
 	return AllocationObject{ID: int64(id), StartIP: value.Start.Addr(int(value.Version)).String(), EndIP: value.End.Addr(int(value.Version)).String(), Version: int(value.Version), Registry: lower(optional(value.Registry)), CountryCode: countryCode(upper(optional(value.Country))), CountryRaw: upper(optional(value.Country)), Name: optional(value.Name), Status: optional(value.Status), AllocationDate: optional(value.AllocationDate), Created: optional(value.Created), LastModified: optional(value.LastModified), Source: optional(value.Source), Maintainers: optional(value.Maintainers), Organization: optional(value.Organization), AbuseContact: optional(value.AbuseContact), Description: optional(value.Description)}
 }
 
-func routeObject(id uint64, value boltstore.Route) RouteObject {
+func routeObject(id uint32, value boltstore.Route) RouteObject {
 	var asnNumber *int
 	if value.ASNumber > 0 {
 		number := int(value.ASNumber)

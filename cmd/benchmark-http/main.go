@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -24,10 +27,11 @@ func (values *headerValues) Set(value string) error {
 }
 
 func main() {
-	var target string
+	var target, connectIP string
 	var requests, concurrency, warmup int
 	var headers headerValues
 	flag.StringVar(&target, "url", "", "absolute HTTP(S) endpoint")
+	flag.StringVar(&connectIP, "connect-ip", "", "override the target hostname's TCP destination while preserving the URL host and HTTPS SNI")
 	flag.IntVar(&requests, "requests", 5000, "measured request count")
 	flag.IntVar(&concurrency, "concurrency", 32, "parallel request count")
 	flag.IntVar(&warmup, "warmup", 200, "unmeasured warmup requests")
@@ -35,6 +39,15 @@ func main() {
 	flag.Parse()
 	if target == "" || requests < 1 || concurrency < 1 || warmup < 0 {
 		fmt.Fprintln(os.Stderr, "url is required; requests and concurrency must be positive; warmup cannot be negative")
+		os.Exit(2)
+	}
+	targetURL, err := url.ParseRequestURI(target)
+	if err != nil || (targetURL.Scheme != "http" && targetURL.Scheme != "https") || targetURL.Hostname() == "" {
+		fmt.Fprintln(os.Stderr, "url must be an absolute HTTP or HTTPS endpoint")
+		os.Exit(2)
+	}
+	if connectIP != "" && net.ParseIP(connectIP) == nil {
+		fmt.Fprintln(os.Stderr, "connect-ip must be a valid IPv4 or IPv6 address")
 		os.Exit(2)
 	}
 
@@ -47,6 +60,9 @@ func main() {
 	transport.MaxIdleConns = concurrency * 2
 	transport.MaxIdleConnsPerHost = concurrency * 2
 	transport.MaxConnsPerHost = concurrency * 2
+	if connectIP != "" {
+		configureDialOverride(transport, targetURL, connectIP)
+	}
 	client := &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	for index := 0; index < warmup; index++ {
 		if err := request(client, target, requestHeaders); err != nil {
@@ -89,6 +105,9 @@ func main() {
 		total += duration
 	}
 	fmt.Printf("target: %s\n", target)
+	if connectIP != "" {
+		fmt.Printf("connect_ip: %s (TLS SNI and Host remain %s)\n", connectIP, targetURL.Hostname())
+	}
 	fmt.Printf("requests: %d  concurrency: %d  keep_alive: true  warmup: %d\n", requests, concurrency, warmup)
 	fmt.Printf("throughput: %.1f req/s\n", float64(requests)/elapsed.Seconds())
 	fmt.Printf("latency_ms: min=%.3f avg=%.3f p50=%.3f p95=%.3f p99=%.3f max=%.3f\n",
@@ -99,6 +118,26 @@ func main() {
 		milliseconds(percentile(durations, 99)),
 		milliseconds(durations[len(durations)-1]),
 	)
+}
+
+func configureDialOverride(transport *http.Transport, target *url.URL, connectIP string) {
+	targetHost := target.Hostname()
+	targetPort := target.Port()
+	if targetPort == "" {
+		if target.Scheme == "https" {
+			targetPort = "443"
+		} else {
+			targetPort = "80"
+		}
+	}
+	dialer := &net.Dialer{}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err == nil && strings.EqualFold(host, targetHost) && port == targetPort {
+			address = net.JoinHostPort(connectIP, port)
+		}
+		return dialer.DialContext(ctx, network, address)
+	}
 }
 
 func parseHeaders(values []string) (http.Header, error) {

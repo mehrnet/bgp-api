@@ -4,6 +4,7 @@ set -euo pipefail
 # Runs the same persistent-connection benchmark against the private loopback
 # origin and the public Cloudflare HTTPS endpoint from a second network.
 ORIGIN_HOST="${BGP_API_ORIGIN_HOST:-root@78.31.250.179}"
+ORIGIN_IP="${BGP_API_ORIGIN_IP:-78.31.250.179}"
 EXTERNAL_HOST="${BGP_API_EXTERNAL_HOST:-root@138.199.236.120}"
 PUBLIC_URL="${BGP_API_PUBLIC_URL:-https://bgp-api.mehrnet.com/v1/ip?query=80.93.223.205}"
 REQUESTS="${BGP_API_BENCH_REQUESTS:-5000}"
@@ -32,6 +33,9 @@ scp -q "$BENCHMARK_BINARY" "$EXTERNAL_HOST:/tmp/bgp-api-benchmark/benchmark"
 
 printf '\n== loopback origin (private HTTP) ==\n'
 ssh "$ORIGIN_HOST" "/tmp/bgp-api-benchmark/benchmark -url 'http://127.0.0.1:${origin_port}/v1/ip?query=80.93.223.205' -requests '$REQUESTS' -concurrency '$CONCURRENCY' -warmup '$WARMUP' -header 'X-BGP-API-Origin-Token: $origin_token'"
+
+printf '\n== external client (direct-origin HTTPS) ==\n'
+ssh "$EXTERNAL_HOST" "/tmp/bgp-api-benchmark/benchmark -url '$PUBLIC_URL' -connect-ip '$ORIGIN_IP' -requests '$REQUESTS' -concurrency '$CONCURRENCY' -warmup '$WARMUP'"
 
 printf '\n== external client (public HTTPS through Cloudflare) ==\n'
 ssh "$EXTERNAL_HOST" "/tmp/bgp-api-benchmark/benchmark -url '$PUBLIC_URL' -requests '$REQUESTS' -concurrency '$CONCURRENCY' -warmup '$WARMUP'"

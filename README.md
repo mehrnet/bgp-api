@@ -89,9 +89,11 @@ journalctl -u bgp-api-sync --since today
 
 ### Benchmark production paths
 
-The benchmark keeps connections alive and measures both the private loopback origin and
-the public HTTPS endpoint from an independent host. It is a development operation, not a
-runtime dependency; Go is needed only on the machine that runs the script.
+The benchmark keeps connections alive and measures the private loopback origin, direct-origin
+HTTPS, and public HTTPS through Cloudflare from an independent host. Direct-origin HTTPS keeps
+the hostname for TLS SNI but connects to `BGP_API_ORIGIN_IP`, bypassing Cloudflare only for the
+measurement. It is a development operation, not a runtime dependency; Go is needed only on the
+machine that runs the script.
 
 ```sh
 BGP_API_ORIGIN_HOST=root@78.31.250.179 \

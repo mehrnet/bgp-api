@@ -90,9 +90,9 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.RuntimeI
 // as details=full, but reads only the fields represented in LookupResponse.
 func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.RuntimeIP) (*LookupResponse, error) {
 	address := ip.Address
-	var allocations []boltstore.Allocation
+	var allocation *boltstore.Allocation
 	var routes []boltstore.Route
-	var geofeeds []boltstore.Geofeed
+	var geofeed *boltstore.Geofeed
 	err := repository.db.View(func(tx *bbolt.Tx) error {
 		allocationLPM := tx.Bucket(boltstore.BucketAllocationLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
 		allocationID, err := boltstore.LookupSelectionLPM(allocationLPM, address)
@@ -104,7 +104,7 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 			if err != nil {
 				return err
 			}
-			allocations = append(allocations, record)
+			allocation = &record
 		}
 		routeLPM := tx.Bucket(boltstore.BucketRouteLPM).Get(boltstore.RouteLPMKey(uint8(ip.Version)))
 		routeIDs, err := boltstore.LookupRouteLPM(routeLPM, address)
@@ -114,12 +114,15 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 		if len(routeIDs) > maxCandidates {
 			routeIDs = routeIDs[:maxCandidates]
 		}
-		for _, id := range routeIDs {
+		if len(routeIDs) > 0 {
+			routes = make([]boltstore.Route, len(routeIDs))
+		}
+		for index, id := range routeIDs {
 			record, err := routeLookupByID(tx, id)
 			if err != nil {
 				return err
 			}
-			routes = append(routes, record)
+			routes[index] = record
 		}
 		geofeedLPM := tx.Bucket(boltstore.BucketGeofeedLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
 		geofeedID, err := boltstore.LookupSelectionLPM(geofeedLPM, address)
@@ -131,14 +134,14 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 			if err != nil {
 				return err
 			}
-			geofeeds = append(geofeeds, record)
+			geofeed = &record
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bbolt compact IP lookup: %w", err)
 	}
-	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{}), nil
+	return buildCompactBboltResponse(ip, allocation, routes, geofeed), nil
 }
 
 // lookupFull keeps the complete RIR/IRR/geofeed source traversal available to
@@ -197,18 +200,36 @@ func buildBboltResponse(ip ipkey.RuntimeIP, allocations []boltstore.Allocation, 
 	allocation := narrowestAllocation(allocations)
 	bestRoutes := narrowestRoutes(routes)
 	geofeed := narrowestGeofeed(geofeeds)
-	if allocation == nil && len(bestRoutes) == 0 && geofeed == nil {
+	response := buildSelectedBboltResponse(ip, allocation, bestRoutes, geofeed)
+	if response == nil {
+		return nil
+	}
+	if options.Details == LookupDetailsFull {
+		response.Details = bboltDetails(allocations, routes, geofeeds)
+	}
+	return response
+}
+
+// buildCompactBboltResponse avoids the source slices and re-selection work
+// needed for details=full. The immutable selectors have already chosen the
+// sole allocation and geofeed matching the compact response contract.
+func buildCompactBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Allocation, routes []boltstore.Route, geofeed *boltstore.Geofeed) *LookupResponse {
+	return buildSelectedBboltResponse(ip, allocation, routes, geofeed)
+}
+
+func buildSelectedBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Allocation, routes []boltstore.Route, geofeed *boltstore.Geofeed) *LookupResponse {
+	if allocation == nil && len(routes) == 0 && geofeed == nil {
 		return nil
 	}
 
 	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
-	response.Network.ASNs = bboltASNs(bestRoutes)
+	response.Network.ASNs = bboltASNs(routes)
 	if len(response.Network.ASNs) == 1 {
 		response.Network.ASN = &response.Network.ASNs[0]
 		response.Network.ASNumber = asNumber(response.Network.ASN)
 	}
-	if len(bestRoutes) > 0 {
-		route := bestRoutes[0]
+	if len(routes) > 0 {
+		route := routes[0]
 		response.Network.CIDR = optional(recordPrefix(route))
 		start, end := prefixRangeForRecord(route)
 		startIP, endIP := start.Addr(int(route.Version)).String(), end.Addr(int(route.Version)).String()
@@ -240,11 +261,8 @@ func buildBboltResponse(ip ipkey.RuntimeIP, allocations []boltstore.Allocation, 
 		response.Location.CountryCode = response.Allocation.CountryCode
 	}
 	response.Sources.Allocation = allocation != nil
-	response.Sources.Route = len(bestRoutes) > 0
+	response.Sources.Route = len(routes) > 0
 	response.Sources.Geofeed = geofeed != nil
-	if options.Details == LookupDetailsFull {
-		response.Details = bboltDetails(allocations, routes, geofeeds)
-	}
 	return response
 }
 
@@ -317,6 +335,13 @@ func subtractAddress(destination, left, right []byte) {
 }
 
 func bboltASNs(routes []boltstore.Route) []string {
+	if len(routes) == 1 {
+		name := strings.ToUpper(strings.TrimSpace(routes[0].OriginASN))
+		if name == "" {
+			return nil
+		}
+		return []string{name}
+	}
 	type asnValue struct {
 		name   string
 		number uint32

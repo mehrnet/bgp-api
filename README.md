@@ -87,6 +87,21 @@ journalctl -u bgp-api -f
 journalctl -u bgp-api-sync --since today
 ```
 
+### Benchmark production paths
+
+The benchmark keeps connections alive and measures both the private loopback origin and
+the public HTTPS endpoint from an independent host. It is a development operation, not a
+runtime dependency; Go is needed only on the machine that runs the script.
+
+```sh
+BGP_API_ORIGIN_HOST=root@78.31.250.179 \
+BGP_API_EXTERNAL_HOST=root@138.199.236.120 \
+./scripts/benchmark-production.sh
+```
+
+It warms the compact IP cache before each measurement. Override `BGP_API_BENCH_REQUESTS`,
+`BGP_API_BENCH_CONCURRENCY`, or `BGP_API_BENCH_WARMUP` to change the workload.
+
 For a manually managed cron schedule:
 
 ```cron
@@ -118,7 +133,6 @@ All endpoints are `GET` requests and return JSON.
 | --- | --- |
 | `/v1/ip?query=1.1.1.1` | Most-specific route, allocation, and location |
 | `/v1/ip?query=1.1.1.1&details=full` | IP lookup with matching source records |
-| `/v1/me` | Look up the client address seen by the API |
 | `/v1/prefix?prefix=1.1.1.0/24` | Allocation and route records for a CIDR |
 | `/v1/range?start=1.1.1.0&end=1.1.1.255` | Records overlapping an inclusive range |
 | `/v1/asn?query=AS13335` | ASN identity and registered routes |
@@ -163,12 +177,13 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `BGP_API_BLUE_GREEN` | `auto` | `auto`, `1`, or `0` |
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
-| `TRUSTED_PROXY_CIDRS` | loopback | Networks allowed to provide client-IP headers |
+| `BGP_API_COMPACT_CACHE_MIB` | `256` | In-process cache budget for default IP responses |
 | `GOMAXPROCS` | Go default | CPU limit |
 | `GOMEMLIMIT` | Go default | Soft Go heap limit |
 
-The installer uses `GOMAXPROCS=2` and `GOMEMLIMIT=384MiB` by default. bbolt maps the
-database read-only, so the operating system can reclaim cached pages when needed.
+The installer uses `GOMAXPROCS=2`, `GOMEMLIMIT=384MiB`, and a `256 MiB` compact-response
+cache by default. bbolt maps the database read-only, so the operating system can reclaim
+database pages when needed.
 
 ## Releases and datasets
 

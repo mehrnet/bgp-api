@@ -74,6 +74,9 @@ func TestSelectionLPMRejectsInvalidInputs(t *testing.T) {
 	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), 0, Address{}, Address{}); err == nil {
 		t.Fatal("accepted zero selector ID")
 	}
+	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), uint64(^uint32(0))+1, Address{}, Address{}); err == nil {
+		t.Fatal("accepted selector ID outside uint32")
+	}
 	if _, err := LookupSelectionLPM(nil, netip.MustParseAddr("1.1.1.1")); err == nil {
 		t.Fatal("accepted empty selector payload")
 	}

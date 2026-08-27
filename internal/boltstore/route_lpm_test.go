@@ -100,4 +100,10 @@ func TestRouteLPMRejectsInvalidInputs(t *testing.T) {
 	if _, err := LookupRouteLPM(nil, netip.MustParseAddr("1.1.1.1")); err == nil {
 		t.Fatal("accepted empty LPM payload")
 	}
+	if err := builder.Insert(netip.MustParsePrefix("1.1.1.0/24"), []uint64{uint64(^uint32(0)) + 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := builder.Encode(); err == nil {
+		t.Fatal("accepted route ID outside uint32")
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -57,7 +56,7 @@ func main() {
 			Commit:  stringPointer(commit),
 			BuiltAt: stringPointer(builtAt),
 		},
-		TrustedProxies: trustedProxies(os.Getenv("TRUSTED_PROXY_CIDRS")),
+		CompactResponseCacheBytes: environmentInt("BGP_API_COMPACT_CACHE_MIB", 256) << 20,
 	}
 	handler := api.New(store, config)
 	server := &http.Server{
@@ -86,21 +85,6 @@ func main() {
 
 func stringPointer(value string) *string {
 	return &value
-}
-
-func trustedProxies(value string) []netip.Prefix {
-	if value == "" {
-		value = "127.0.0.1/32,::1/128"
-	}
-	prefixes := make([]netip.Prefix, 0)
-	for _, item := range strings.Split(value, ",") {
-		prefix, err := netip.ParsePrefix(strings.TrimSpace(item))
-		if err != nil {
-			log.Fatalf("TRUSTED_PROXY_CIDRS contains an invalid CIDR: %v", err)
-		}
-		prefixes = append(prefixes, prefix)
-	}
-	return prefixes
 }
 
 func listenAddress() string {

@@ -9,7 +9,7 @@ import (
 
 const selectionLPMHeaderSize = 16
 
-var selectionLPMMagic = [4]byte{'S', 'L', 'P', 'M'}
+var selectionLPMMagic = [4]byte{'S', 'L', 'P', '2'}
 
 // SelectionLPMStats describes one immutable allocation or geofeed selector.
 type SelectionLPMStats struct {
@@ -18,7 +18,7 @@ type SelectionLPMStats struct {
 }
 
 type selectionCandidate struct {
-	id    uint64
+	id    uint32
 	width Address
 }
 
@@ -56,7 +56,10 @@ func (builder *selectionLPMBuilder) Insert(prefix netip.Prefix, id uint64, start
 	if id == 0 {
 		return errors.New("selection LPM record has no ID")
 	}
-	candidate := selectionCandidate{id: id, width: selectionRangeWidth(start, end)}
+	if id > uint64(^uint32(0)) {
+		return errors.New("selection LPM record ID exceeds uint32")
+	}
+	candidate := selectionCandidate{id: uint32(id), width: selectionRangeWidth(start, end)}
 	address := AddressFromAddr(prefix.Addr())
 	root, err := builder.insert(1, address, uint8(prefix.Bits()), candidate)
 	if err != nil {
@@ -148,8 +151,8 @@ func (builder *selectionLPMBuilder) Encode() ([]byte, SelectionLPMStats, error) 
 		binary.BigEndian.PutUint32(encoded[offset:offset+4], node.children[0])
 		binary.BigEndian.PutUint32(encoded[offset+4:offset+8], node.children[1])
 		offset += 8
-		binary.BigEndian.PutUint64(encoded[offset:offset+8], node.candidate.id)
-		offset += 8
+		binary.BigEndian.PutUint32(encoded[offset:offset+4], node.candidate.id)
+		offset += 4
 		copy(encoded[offset:offset+addressBytes], selectionAddressBytes(node.candidate.width, builder.version))
 	}
 	return encoded, SelectionLPMStats{Nodes: uint64(len(builder.nodes)), Bytes: totalBytes}, nil
@@ -183,7 +186,7 @@ func LookupSelectionLPM(value []byte, address netip.Addr) (uint64, error) {
 		bits = 32
 	}
 	current := uint32(0)
-	var bestID uint64
+	var bestID uint32
 	var bestWidth Address
 	var bestPrefixLength uint8
 	for {
@@ -196,9 +199,9 @@ func LookupSelectionLPM(value []byte, address netip.Addr) (uint64, error) {
 			break
 		}
 		candidateOffset := offset + addressBytes + 1 + 8
-		candidateID := binary.BigEndian.Uint64(value[candidateOffset : candidateOffset+8])
+		candidateID := binary.BigEndian.Uint32(value[candidateOffset : candidateOffset+4])
 		if candidateID != 0 {
-			widthOffset := candidateOffset + 8
+			widthOffset := candidateOffset + 4
 			if bestID == 0 || selectionEncodedCandidateLess(value[widthOffset:widthOffset+addressBytes], candidateID, prefixLength, bestWidth, bestID, bestPrefixLength, version) {
 				bestID, bestPrefixLength = candidateID, prefixLength
 				selectionCopyAddressBytes(bestWidth[:], value[widthOffset:widthOffset+addressBytes], version)
@@ -215,15 +218,15 @@ func LookupSelectionLPM(value []byte, address netip.Addr) (uint64, error) {
 		}
 		current = next - 1
 	}
-	return bestID, nil
+	return uint64(bestID), nil
 }
 
 func selectionLPMNodeLayout(version uint8) (nodeSize, addressBytes int, err error) {
 	switch version {
 	case 4:
-		return 25, 4, nil
+		return 21, 4, nil
 	case 6:
-		return 49, 16, nil
+		return 45, 16, nil
 	default:
 		return 0, 0, errors.New("invalid selection LPM version")
 	}
@@ -236,7 +239,7 @@ func selectionCandidateLess(left, right selectionCandidate) bool {
 	return left.id < right.id
 }
 
-func selectionEncodedCandidateLess(width []byte, id uint64, prefixLength uint8, bestWidth Address, bestID uint64, bestPrefixLength uint8, version uint8) bool {
+func selectionEncodedCandidateLess(width []byte, id uint32, prefixLength uint8, bestWidth Address, bestID uint32, bestPrefixLength uint8, version uint8) bool {
 	best := selectionAddressBytes(bestWidth, version)
 	if compared := bytes.Compare(width, best); compared != 0 {
 		return compared < 0

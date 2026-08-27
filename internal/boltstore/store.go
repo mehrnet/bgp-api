@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	SchemaVersion     = 4
+	SchemaVersion     = 5
 	PrefixKeySize     = 18
 	IndexKeySize      = PrefixKeySize + 8
 	RangeIndexKeySize = 1 + 16 + 16 + 8

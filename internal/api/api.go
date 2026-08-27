@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net"
 	"net/http"
-	"net/netip"
 	"strconv"
 	"strings"
 
@@ -62,10 +60,10 @@ const (
 )
 
 type Config struct {
-	AllowedOrigins  map[string]struct{}
-	OriginAuthToken string
-	Build           BuildInfo
-	TrustedProxies  []netip.Prefix
+	AllowedOrigins            map[string]struct{}
+	OriginAuthToken           string
+	Build                     BuildInfo
+	CompactResponseCacheBytes int
 }
 
 type nullableString = *string
@@ -176,6 +174,7 @@ type errorResponse struct {
 }
 
 func New(repository Repository, config Config) http.Handler {
+	compactCache := newCompactResponseCache(config.CompactResponseCacheBytes)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if config.OriginAuthToken != "" && request.Header.Get("X-BGP-API-Origin-Token") != config.OriginAuthToken {
 			writeError(writer, http.StatusUnauthorized, "UNAUTHORIZED", "origin authorization required")
@@ -201,10 +200,8 @@ func New(repository Repository, config Config) http.Handler {
 			writeJSON(writer, http.StatusOK, map[string]any{"ok": true, "service": "bgp-api", "version": 1})
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/health":
 			health(writer, request, repository, config)
-		case request.Method == http.MethodGet && request.URL.Path == "/v1/me":
-			lookupIP(writer, request, repository, clientIP(request, config.TrustedProxies))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/ip":
-			lookupIP(writer, request, repository, request.URL.Query().Get("query"))
+			lookupIP(writer, request, repository, compactCache, request.URL.Query().Get("query"))
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/prefix":
 			lookupPrefix(writer, request, repository)
 		case request.Method == http.MethodGet && request.URL.Path == "/v1/range":
@@ -432,7 +429,7 @@ func parseASN(input string) (uint32, bool) {
 	return uint32(number), true
 }
 
-func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, input string) {
+func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repository, cache *compactResponseCache, input string) {
 	ip, ok := ipkey.ParseRuntime(input)
 	if !ok {
 		writeError(writer, http.StatusBadRequest, "INVALID_IP", "query must be a valid IPv4 or IPv6 address")
@@ -441,6 +438,12 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 	options, ok := lookupOptions(writer, request)
 	if !ok {
 		return
+	}
+	if options.Details == LookupDetailsNone {
+		if cached, ok := cache.Get(ip.Canonical); ok {
+			writeJSONBytes(writer, http.StatusOK, cached)
+			return
+		}
 	}
 	response, err := repository.Lookup(request.Context(), ip, options)
 	if err != nil {
@@ -452,6 +455,18 @@ func lookupIP(writer http.ResponseWriter, request *http.Request, repository Repo
 		return
 	}
 	if !attachMeta(writer, request, repository, response) {
+		return
+	}
+	if options.Details == LookupDetailsNone {
+		body, err := json.Marshal(response)
+		if err != nil {
+			log.Printf("compact IP response encoding failed for %s: %v", ip.Canonical, err)
+			writeError(writer, http.StatusInternalServerError, "INTERNAL_ERROR", "unexpected lookup serialization failure")
+			return
+		}
+		body = append(body, '\n')
+		cache.Add(ip.Canonical, body)
+		writeJSONBytes(writer, http.StatusOK, body)
 		return
 	}
 	writeJSON(writer, http.StatusOK, response)
@@ -501,47 +516,6 @@ func datasetMetadata(ctx context.Context, repository Repository) (*DatasetMetada
 	return metadataRepository.DatasetMetadata(ctx)
 }
 
-func clientIP(request *http.Request, trustedProxies []netip.Prefix) string {
-	peer, ok := addressFromRemote(request.RemoteAddr)
-	if !ok {
-		return ""
-	}
-	if !isTrustedProxy(peer, trustedProxies) {
-		return peer.String()
-	}
-	for _, header := range []string{"X-BGP-API-Cloudflare-IPv6", "X-BGP-API-Cloudflare-IP", "X-BGP-API-Forwarded-IP"} {
-		if candidate, ok := addressFromHeader(request.Header.Get(header)); ok {
-			return candidate.String()
-		}
-	}
-	return peer.String()
-}
-
-func addressFromRemote(remote string) (netip.Addr, bool) {
-	host, _, err := net.SplitHostPort(remote)
-	if err != nil {
-		host = remote
-	}
-	return addressFromHeader(host)
-}
-
-func addressFromHeader(value string) (netip.Addr, bool) {
-	address, err := netip.ParseAddr(strings.TrimSpace(value))
-	if err != nil {
-		return netip.Addr{}, false
-	}
-	return address.Unmap(), true
-}
-
-func isTrustedProxy(address netip.Addr, trustedProxies []netip.Prefix) bool {
-	for _, prefix := range trustedProxies {
-		if prefix.Contains(address) {
-			return true
-		}
-	}
-	return false
-}
-
 func setCORS(writer http.ResponseWriter, origin string, allowed bool) {
 	writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 	writer.Header().Set("Access-Control-Allow-Headers", "Content-Type")
@@ -562,6 +536,12 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(value)
+}
+
+func writeJSONBytes(writer http.ResponseWriter, status int, value []byte) {
+	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.WriteHeader(status)
+	_, _ = writer.Write(value)
 }
 
 func lower(value nullableString) nullableString {

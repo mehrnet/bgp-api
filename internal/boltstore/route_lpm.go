@@ -13,7 +13,7 @@ const (
 )
 
 var (
-	routeLPMMagic   = [4]byte{'M', 'L', 'P', 'M'}
+	routeLPMMagic   = [4]byte{'M', 'L', 'P', '2'}
 	routeLPMIPv4Key = []byte("ipv4")
 	routeLPMIPv6Key = []byte("ipv6")
 )
@@ -134,7 +134,7 @@ func (builder *routeLPMBuilder) Encode() ([]byte, RouteLPMStats, error) {
 	if totalIDs > uint64(^uint32(0)) {
 		return nil, RouteLPMStats{}, errors.New("route LPM has too many route IDs")
 	}
-	totalBytes := uint64(routeLPMHeaderSize) + uint64(len(builder.nodes))*routeLPMNodeSize + totalIDs*8
+	totalBytes := uint64(routeLPMHeaderSize) + uint64(len(builder.nodes))*routeLPMNodeSize + totalIDs*4
 	if totalBytes > uint64(int(^uint(0)>>1)) {
 		return nil, RouteLPMStats{}, errors.New("route LPM exceeds addressable memory")
 	}
@@ -155,8 +155,11 @@ func (builder *routeLPMBuilder) Encode() ([]byte, RouteLPMStats, error) {
 		binary.BigEndian.PutUint32(encoded[nodeOffset+25:nodeOffset+29], idOffset)
 		binary.BigEndian.PutUint32(encoded[nodeOffset+29:nodeOffset+33], uint32(len(node.ids)))
 		for _, id := range node.ids {
-			binary.BigEndian.PutUint64(encoded[idsOffset:idsOffset+8], id)
-			idsOffset += 8
+			if id == 0 || id > uint64(^uint32(0)) {
+				return nil, RouteLPMStats{}, errors.New("route LPM record ID exceeds uint32")
+			}
+			binary.BigEndian.PutUint32(encoded[idsOffset:idsOffset+4], uint32(id))
+			idsOffset += 4
 		}
 		idOffset += uint32(len(node.ids))
 		nodeOffset += routeLPMNodeSize
@@ -187,7 +190,7 @@ func LookupRouteLPM(value []byte, address netip.Addr) ([]uint64, error) {
 	if nodeCount == 0 {
 		return nil, errors.New("route LPM has no root node")
 	}
-	expected := uint64(routeLPMHeaderSize) + uint64(nodeCount)*routeLPMNodeSize + uint64(idCount)*8
+	expected := uint64(routeLPMHeaderSize) + uint64(nodeCount)*routeLPMNodeSize + uint64(idCount)*4
 	if expected != uint64(len(value)) {
 		return nil, errors.New("invalid route LPM length")
 	}
@@ -225,10 +228,10 @@ func LookupRouteLPM(value []byte, address netip.Addr) ([]uint64, error) {
 	if uint64(bestOffset)+uint64(bestCount) > uint64(idCount) {
 		return nil, errors.New("route LPM route ID range is invalid")
 	}
-	idsOffset := routeLPMHeaderSize + int(nodeCount)*routeLPMNodeSize + int(bestOffset)*8
+	idsOffset := routeLPMHeaderSize + int(nodeCount)*routeLPMNodeSize + int(bestOffset)*4
 	result := make([]uint64, bestCount)
 	for index := range result {
-		result[index] = binary.BigEndian.Uint64(value[idsOffset+index*8 : idsOffset+index*8+8])
+		result[index] = uint64(binary.BigEndian.Uint32(value[idsOffset+index*4 : idsOffset+index*4+4]))
 	}
 	return result, nil
 }

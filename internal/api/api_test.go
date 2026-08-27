@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strings"
 	"testing"
 
@@ -118,21 +117,6 @@ func TestHealthIncludesDatasetMetadata(t *testing.T) {
 	}
 }
 
-func TestHandlerLooksUpTrustedCloudflareClientIP(t *testing.T) {
-	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
-	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
-	request.RemoteAddr = "127.0.0.1:3102"
-	request.Header.Set("X-BGP-API-Cloudflare-IP", "185.227.108.163")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"185.227.108.163"`) {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"meta":{"dataset":`) {
-		t.Fatalf("missing dataset meta: %s", response.Body.String())
-	}
-}
-
 func TestHandlerIgnoresLegacyEnrichmentParameter(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
 	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&enrich=1", nil)
@@ -165,7 +149,7 @@ func TestHandlerRejectsInvalidDetailsMode(t *testing.T) {
 
 func TestHandlerDoesNotServeLegacyPathOrSearchRoutes(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
-	for _, path := range []string{"/v1/ip/1.1.1.1", "/v1/asn/AS13335", "/v1/search?q=1.1.1.1"} {
+	for _, path := range []string{"/v1/me", "/v1/ip/1.1.1.1", "/v1/asn/AS13335", "/v1/search?q=1.1.1.1"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
@@ -175,28 +159,31 @@ func TestHandlerDoesNotServeLegacyPathOrSearchRoutes(t *testing.T) {
 	}
 }
 
-func TestHandlerLooksUpTrustedCloudflareIPv6(t *testing.T) {
-	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("::1/128")}})
-	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
-	request.RemoteAddr = "[::1]:3102"
-	request.Header.Set("X-BGP-API-Cloudflare-IP", "240.16.0.1")
-	request.Header.Set("X-BGP-API-Cloudflare-IPv6", "2606:4700:4700::1111")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"2606:4700:4700::1111"`) {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
+type countingRepository struct {
+	fakeRepository
+	lookups int
 }
 
-func TestHandlerIgnoresForwardedIPFromUntrustedPeer(t *testing.T) {
-	handler := New(fakeRepository{}, Config{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}})
-	request := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
-	request.RemoteAddr = "94.141.98.12:443"
-	request.Header.Set("X-BGP-API-Cloudflare-IP", "185.227.108.163")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ip":"94.141.98.12"`) {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+func (repository *countingRepository) Lookup(ctx context.Context, ip ipkey.RuntimeIP, options LookupOptions) (*LookupResponse, error) {
+	repository.lookups++
+	return repository.fakeRepository.Lookup(ctx, ip, options)
+}
+
+func TestHandlerCachesOnlyDefaultCompactIPResponses(t *testing.T) {
+	repository := &countingRepository{}
+	handler := New(repository, Config{CompactResponseCacheBytes: 1 << 20})
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1", nil)
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, request)
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, request)
+	if repository.lookups != 1 || first.Body.String() != second.Body.String() {
+		t.Fatalf("lookups = %d, first = %s, second = %s", repository.lookups, first.Body.String(), second.Body.String())
+	}
+	full := httptest.NewRecorder()
+	handler.ServeHTTP(full, httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&details=full", nil))
+	if repository.lookups != 2 {
+		t.Fatalf("details=full lookup count = %d", repository.lookups)
 	}
 }
 

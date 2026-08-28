@@ -49,8 +49,8 @@ jobs:
       matrix:
         rir: [ripe, apnic, afrinic, lacnic, arin]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Install download client
@@ -87,7 +87,7 @@ jobs:
         run: aria2c -x 16 -s 16 -j 5 --dir=raw_data --input-file=urls.txt
       - name: Parse source records
         run: go run ./cmd/parse-rir ${{ matrix.rir }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: data-${{ matrix.rir }}
           path: |
@@ -96,7 +96,7 @@ jobs:
             autnums_${{ matrix.rir }}.csv
           retention-days: 1
           if-no-files-found: error
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: geofeeds-${{ matrix.rir }}
           path: geofeeds_${{ matrix.rir }}.txt
@@ -108,11 +108,11 @@ jobs:
     needs: parse-rir
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           pattern: geofeeds-*
           path: artifacts
@@ -124,7 +124,7 @@ jobs:
           cat artifacts/geofeeds_*.txt | sort -u > final_data/geofeeds.txt
       - name: Fetch geofeeds
         run: go run ./cmd/fetch-geofeeds
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: geofeed-locations
           path: final_data/geolocations.csv
@@ -147,16 +147,16 @@ jobs:
             database: mehrnet_bgp.db
             asset: mehrnet_bgp_sqlite.tar.zst
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           pattern: data-*
           path: artifacts
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: geofeed-locations
           path: final_data
@@ -218,7 +218,7 @@ jobs:
           tar --create --file - "${{ matrix.database }}" | zstd --threads=0 -3 --stdout > "${{ matrix.asset }}"
           sha256sum "${{ matrix.asset }}" > "checksum-${{ matrix.format }}.txt"
           gh release upload "$RELEASE_TAG" "${{ matrix.asset }}" --clobber
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: checksum-${{ matrix.format }}
           path: checksum-${{ matrix.format }}.txt
@@ -233,8 +233,8 @@ jobs:
       amd64_sha: ${{ steps.assets.outputs.amd64_sha }}
       arm64_sha: ${{ steps.assets.outputs.arm64_sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
       - name: Build static Linux binaries
@@ -268,7 +268,7 @@ jobs:
     needs: [release-metadata, build-database, build-api-binaries]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           pattern: checksum-*
           path: checksums

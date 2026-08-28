@@ -114,6 +114,23 @@ process_rss_mib() {
   awk '/^VmRSS:/ { printf "%d\n", $2 / 1024; exit }' "/proc/$pid/status" 2>/dev/null
 }
 
+deprioritize_staged_slot() {
+  local service="$1"
+  # The selector copy can be CPU and page-fault intensive on a small host.
+  # Keep the currently public service ahead of it until the replacement is
+  # fully warm and ready for Caddy to promote.
+  if ! systemctl set-property --runtime "$service" CPUWeight=1 IOWeight=1 >/dev/null; then
+    say "could not lower $service CPU/I/O weight during cache warmup"
+  fi
+}
+
+restore_slot_priority() {
+  local service="$1"
+  if ! systemctl set-property --runtime "$service" CPUWeight=100 IOWeight=100 >/dev/null; then
+    say "could not restore $service CPU/I/O weight"
+  fi
+}
+
 runtime_cache_control_supported() {
   local service="$1" port="$2" token response
   service_main_pid "$service" >/dev/null || return 1
@@ -494,7 +511,9 @@ if [ "$blue_green" = true ]; then
   set_env_value BGP_API_RUNTIME_CACHE_CONTROL 1 "$target_env_file"
   set_env_value BGP_API_DEFER_CACHE_WARMUP 0 "$target_env_file"
   set_env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP 1 "$target_env_file"
+  deprioritize_staged_slot "$target_service"
   if ! systemctl start "$target_service"; then
+    restore_slot_priority "$target_service"
     set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
     set_env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP "${block_cache_warmup_before:-0}" "$target_env_file"
     restore_active_caches_after_failed_stage "$active_service"
@@ -503,6 +522,7 @@ if [ "$blue_green" = true ]; then
   set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
   set_env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP "${block_cache_warmup_before:-0}" "$target_env_file"
   if ! health_check "$target_port"; then
+    restore_slot_priority "$target_service"
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"
@@ -518,9 +538,11 @@ if [ "$blue_green" = true ]; then
   staged_rss="${staged_pid:+$(process_rss_mib "$staged_pid" 2>/dev/null || true)}"
   say "memory with both slots running: available=$(memory_available_mib) MiB staged_rss=${staged_rss:-unknown} MiB"
   systemctl enable "$target_service" >/dev/null
+  restore_slot_priority "$target_service"
 
   say "switching Caddy traffic to the prewarmed $target_service slot on 127.0.0.1:$target_port"
   if ! switch_caddy "$target_port" "$(port_for_slot "$active_slot")"; then
+    restore_slot_priority "$target_service"
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"

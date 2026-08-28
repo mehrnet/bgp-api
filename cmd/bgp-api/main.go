@@ -48,12 +48,9 @@ func main() {
 		return
 	}
 	if environmentBool("BGP_API_PRELOAD_COMPACT_SELECTORS", false) {
-		started := time.Now()
-		preload, err := store.PreloadCompactSelectors()
-		if err != nil {
+		if err := preloadCompactSelectors(store); err != nil {
 			log.Fatalf("preload compact selectors: %v", err)
 		}
-		log.Printf("preloaded %.1f MiB of compact IP selectors in %s", float64(preload.Bytes)/(1<<20), time.Since(started).Round(time.Millisecond))
 	}
 
 	config := api.Config{
@@ -82,14 +79,34 @@ func main() {
 		}
 	}()
 
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
-	<-signals
-	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := server.Shutdown(shutdown); err != nil {
-		log.Printf("shutdown: %v", err)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
+	for received := range signals {
+		if received == syscall.SIGUSR1 {
+			go func() {
+				if err := preloadCompactSelectors(store); err != nil {
+					log.Printf("preload compact selectors: %v", err)
+				}
+			}()
+			continue
+		}
+		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := server.Shutdown(shutdown); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+		cancel()
+		return
 	}
+}
+
+func preloadCompactSelectors(store *api.BboltRepository) error {
+	started := time.Now()
+	preload, err := store.PreloadCompactSelectors()
+	if err != nil {
+		return err
+	}
+	log.Printf("preloaded %.1f MiB of compact IP selectors in %s", float64(preload.Bytes)/(1<<20), time.Since(started).Round(time.Millisecond))
+	return nil
 }
 
 func stringPointer(value string) *string {

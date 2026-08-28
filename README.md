@@ -193,6 +193,9 @@ faults on first-seen default IP lookups. On smaller hosts it remains disabled an
 installer uses `GOMEMLIMIT=384MiB`. Both profiles use `GOMAXPROCS=2`, a `256 MiB`
 IP-response cache, and a `64 MiB` resource-response cache. bbolt maps the remainder of
 the database read-only, so the operating system can reclaim those pages when needed.
+During a blue-green update, the staged slot starts without the selector copy. After Caddy
+switches traffic and the old slot drains, the updater signals the new active process to
+preload it in the background. This avoids retaining two selector copies at once.
 
 ## Releases and datasets
 

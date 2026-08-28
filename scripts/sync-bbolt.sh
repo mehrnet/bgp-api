@@ -16,6 +16,8 @@ readonly PUBLISHED_FILE="${BGP_API_PUBLISHED_FILE:-$DATA_DIR/release-published-a
 readonly ACTIVE_SLOT_FILE="${BGP_API_ACTIVE_SLOT_FILE:-$DATA_DIR/active-slot}"
 readonly SERVICE="${BGP_API_SERVICE:-bgp-api.service}"
 readonly SECONDARY_SERVICE="${BGP_API_SECONDARY_SERVICE:-bgp-api-secondary.service}"
+readonly PRIMARY_ENV_FILE="${BGP_API_PRIMARY_ENV_FILE:-/etc/bgp-api/bgp-api.env}"
+readonly SECONDARY_ENV_FILE="${BGP_API_SECONDARY_ENV_FILE:-/etc/bgp-api/bgp-api-secondary.env}"
 readonly CADDY_ENV_FILE="${BGP_API_CADDY_ENV_FILE:-/etc/bgp-api/caddy.env}"
 readonly CADDY_CONFIG="${BGP_API_CADDY_CONFIG:-/etc/caddy/Caddyfile}"
 readonly CADDY_MANAGED_CONFIG="${BGP_API_CADDY_MANAGED_CONFIG:-/etc/caddy/conf.d/mehrnet-bgp-api.caddy}"
@@ -115,6 +117,40 @@ port_for_slot() {
     secondary) printf '3103\n' ;;
     *) return 1 ;;
   esac
+}
+
+env_file_for_slot() {
+  case "$1" in
+    primary) printf '%s\n' "$PRIMARY_ENV_FILE" ;;
+    secondary) printf '%s\n' "$SECONDARY_ENV_FILE" ;;
+    *) return 1 ;;
+  esac
+}
+
+env_bool() {
+  local name="$1" path="$2" value
+  value="$(env_value "$name" "$path")"
+  case "${value,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+set_env_value() {
+  local name="$1" value="$2" path="$3" temporary owner group mode
+  owner="$(stat -c '%u' "$path")"
+  group="$(stat -c '%g' "$path")"
+  mode="$(stat -c '%a' "$path")"
+  temporary="$(mktemp "${path}.tmp.XXXXXX")"
+  if grep -q "^${name}=" "$path"; then
+    sed "s|^${name}=.*|${name}=${value}|" "$path" > "$temporary"
+  else
+    cat "$path" > "$temporary"
+    printf '%s=%s\n' "$name" "$value" >> "$temporary"
+  fi
+  chown "$owner:$group" "$temporary"
+  chmod "$mode" "$temporary"
+  mv -f "$temporary" "$path"
 }
 
 read_active_slot() {
@@ -343,6 +379,7 @@ fi
 target_service="$(service_for_slot "$target_slot")"
 target_database="$(database_for_slot "$target_slot")"
 target_port="$(port_for_slot "$target_slot")"
+target_env_file="$(env_file_for_slot "$target_slot")"
 
 new_size="$(stat -c '%s' "$new_database")"
 available_bytes="$(df -P -B1 "$DATA_DIR" | awk 'NR == 2 { print $4 }')"
@@ -377,7 +414,23 @@ if [ "$blue_green" = true ]; then
   mv "$new_database" "$target_database"
   chown bgpapi:bgpapi "$target_database"
   chmod 0440 "$target_database"
-  systemctl start "$target_service"
+  deferred_preload=false
+  if env_bool BGP_API_PRELOAD_COMPACT_SELECTORS "$target_env_file"; then
+    # Do not hold two 508 MiB selector copies during a blue-green handover.
+    # systemd reads this file before exec, so restoring it after start affects
+    # the next process only; SIGUSR1 triggers the new active process later.
+    set_env_value BGP_API_PRELOAD_COMPACT_SELECTORS 0 "$target_env_file"
+    deferred_preload=true
+  fi
+  if ! systemctl start "$target_service"; then
+    if [ "$deferred_preload" = true ]; then
+      set_env_value BGP_API_PRELOAD_COMPACT_SELECTORS 1 "$target_env_file"
+    fi
+    die "$target_service could not start"
+  fi
+  if [ "$deferred_preload" = true ]; then
+    set_env_value BGP_API_PRELOAD_COMPACT_SELECTORS 1 "$target_env_file"
+  fi
   if ! health_check "$target_port"; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
@@ -437,6 +490,10 @@ if [ "$blue_green" = true ]; then
   rm -f -- "$active_database"
   systemctl disable "$active_service" >/dev/null 2>&1 || true
   write_active_slot "$target_slot"
+  if [ "$deferred_preload" = true ]; then
+    say "preloading compact selectors in the active $target_service slot"
+    systemctl kill --signal=USR1 "$target_service"
+  fi
 else
   say "using stop-and-replace activation for release $release_tag"
   stop_service "$SERVICE"

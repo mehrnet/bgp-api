@@ -73,8 +73,8 @@ Updates use the inactive slot when Caddy is configured:
 1. Download and verify the release.
 2. Validate the database and binary.
 3. Start the inactive slot and check its health.
-4. Switch Caddy to the new slot.
-5. Keep the old slot available for a short proxy drain grace period, then stop it and remove its database.
+4. Caddy retries/fails over to the healthy staged slot without a reload.
+5. Keep the old slot available for a short drain grace period, then stop it and remove its database.
 
 This keeps planned dataset updates available without rebuilding indexes on the server.
 If Caddy is unavailable, disk space is insufficient, or `BGP_API_BLUE_GREEN=0` is set,
@@ -219,11 +219,12 @@ there. A 5 GiB-or-larger host can usually use `full`, while bbolt still lets Lin
 pages under pressure.
 
 The active server starts accepting traffic before its selected cache begins warming. In a
-blue-green update the staged slot explicitly defers warmup, Caddy switches only after its
-health check passes, and the old slot drains. The updater then sends `SIGUSR1` to warm the
-new active slot in the background. Its in-process response caches start empty by design,
-so update traffic remains available while the new selector or page cache reaches its hot
-state.
+blue-green update the staged slot explicitly defers warmup. Caddy is configured with both
+loopback slots and retries a healthy peer without a configuration reload, so existing
+HTTP/2 and Cloudflare origin connections remain valid while the old slot drains. The updater
+then sends `SIGUSR1` to warm the new active slot in the background. Its in-process response
+caches start empty by design, so update traffic remains available while the new selector or
+page cache reaches its hot state.
 
 ## Releases and datasets
 

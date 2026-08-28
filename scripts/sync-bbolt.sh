@@ -277,7 +277,7 @@ blue_green_available() {
       command -v caddy >/dev/null 2>&1 || return 1
       [ -s "$CADDY_ENV_FILE" ] || return 1
       [ -s "$CADDY_CONFIG" ] || return 1
-      grep -Fq 'BGP_API_UPSTREAM' "$CADDY_MANAGED_CONFIG" || return 1
+      caddy_proxy_configured || return 1
       service_active caddy || return 1
       ;;
     *) die "BGP_API_BLUE_GREEN must be auto, 0, or 1" ;;
@@ -285,7 +285,7 @@ blue_green_available() {
   command -v caddy >/dev/null 2>&1 || die "blue-green updates require caddy"
   [ -s "$CADDY_ENV_FILE" ] || die "blue-green updates require $CADDY_ENV_FILE"
   [ -s "$CADDY_CONFIG" ] || die "blue-green updates require $CADDY_CONFIG"
-  grep -Fq 'BGP_API_UPSTREAM' "$CADDY_MANAGED_CONFIG" || die "Caddyfile does not support blue-green upstream switching"
+  caddy_proxy_configured || die "Caddyfile does not support blue-green proxying"
   service_active caddy || die "blue-green updates require an active caddy service"
   return 0
 }
@@ -294,7 +294,16 @@ caddy_configured() {
   command -v caddy >/dev/null 2>&1 &&
     [ -s "$CADDY_ENV_FILE" ] &&
     [ -s "$CADDY_CONFIG" ] &&
-    grep -Fq 'BGP_API_UPSTREAM' "$CADDY_MANAGED_CONFIG"
+    caddy_proxy_configured
+}
+
+caddy_proxy_configured() {
+  grep -Fq 'BGP_API_UPSTREAM' "$CADDY_MANAGED_CONFIG" ||
+    grep -Fq '127.0.0.1:3102 127.0.0.1:3103' "$CADDY_MANAGED_CONFIG"
+}
+
+static_failover_proxy_configured() {
+  grep -Fq '127.0.0.1:3102 127.0.0.1:3103' "$CADDY_MANAGED_CONFIG"
 }
 
 set_caddy_upstream() {
@@ -348,6 +357,13 @@ reload_caddy() {
 
 switch_caddy() {
   local port="$1" previous
+  # Both API slots are permanent upstreams in the current Caddy config.
+  # Passive retry/failover handles the slot transition without a reload, so
+  # existing HTTP/2 and Cloudflare origin connections never retain a route to
+  # a backend that will be removed.
+  if static_failover_proxy_configured; then
+    return 0
+  fi
   previous="$(env_value BGP_API_UPSTREAM "$CADDY_ENV_FILE")"
   set_caddy_upstream "127.0.0.1:$port"
   if ! reload_caddy "127.0.0.1:$port"; then

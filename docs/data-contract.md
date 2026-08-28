@@ -24,6 +24,14 @@ source data are `null`; they are never guessed.
     "end_ip": "1.1.1.255",
     "asn": "AS13335",
     "asns": ["AS13335"],
+    "origins": [
+      {
+        "asn": "AS13335",
+        "as_number": 13335,
+        "name": "CLOUDFLARENET",
+        "organization": "ORG-CLOUD14-ARIN"
+      }
+    ],
     "as_number": 13335,
     "status": null,
     "abuse_contact": null
@@ -99,5 +107,9 @@ code.
 `network.asns` retains every origin ASN for a most-specific route. `network.asn`
 and `network.as_number` are populated only when that route has one origin;
 they are `null` for a multi-origin route rather than choosing an arbitrary ASN.
+`network.origins` supplies the matching registered `aut-num` name and
+organization for each origin when that record exists in the dataset. The array
+uses the same order as `network.asns`; unavailable identities use `null` name
+and organization values.
 `network` contains route-registration information only and does not identify an
 ASN owner. RIR `netname` values are returned exclusively as `allocation.name`.

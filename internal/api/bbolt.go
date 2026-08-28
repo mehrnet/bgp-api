@@ -292,6 +292,7 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 	selectors := repository.selectorPreload.Load()
 	var allocation *boltstore.Allocation
 	var routes []boltstore.Route
+	var origins []ASNIdentity
 	var geofeed *boltstore.Geofeed
 	err := repository.db.View(func(tx *bbolt.Tx) error {
 		var allocationLPM []byte
@@ -334,6 +335,10 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 			}
 			routes[index] = record
 		}
+		origins, err = bboltOriginIdentities(tx, routes)
+		if err != nil {
+			return err
+		}
 		var geofeedLPM []byte
 		if selectors != nil {
 			geofeedLPM = selectors.geofeeds[selectorIndex]
@@ -356,7 +361,7 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 	if err != nil {
 		return nil, fmt.Errorf("bbolt compact IP lookup: %w", err)
 	}
-	return buildCompactBboltResponse(ip, allocation, routes, geofeed), nil
+	return buildCompactBboltResponse(ip, allocation, routes, origins, geofeed), nil
 }
 
 // lookupFull keeps the complete RIR/IRR/geofeed source traversal available to
@@ -365,6 +370,7 @@ func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.Runt
 	address := ip.Address
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
+	var origins []ASNIdentity
 	var geofeeds []boltstore.Geofeed
 	err := repository.db.View(func(tx *bbolt.Tx) error {
 		allocationIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
@@ -389,6 +395,10 @@ func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.Runt
 			}
 			routes = append(routes, record)
 		}
+		origins, err = bboltOriginIdentities(tx, narrowestRoutes(routes))
+		if err != nil {
+			return err
+		}
 		geofeedIDs, err := matchingIPIDs(ctx, tx.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
 		if err != nil {
 			return err
@@ -405,17 +415,17 @@ func (repository *BboltRepository) lookupFull(ctx context.Context, ip ipkey.Runt
 	if err != nil {
 		return nil, fmt.Errorf("bbolt full IP lookup: %w", err)
 	}
-	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{Details: LookupDetailsFull}), nil
+	return buildBboltResponse(ip, allocations, routes, origins, geofeeds, LookupOptions{Details: LookupDetailsFull}), nil
 }
 
 // buildBboltResponse is the production point-lookup path. It keeps bbolt's
 // binary addresses intact through selection and JSON construction, avoiding
 // the historical decimal sort-key and math/big conversion layer.
-func buildBboltResponse(ip ipkey.RuntimeIP, allocations []boltstore.Allocation, routes []boltstore.Route, geofeeds []boltstore.Geofeed, options LookupOptions) *LookupResponse {
+func buildBboltResponse(ip ipkey.RuntimeIP, allocations []boltstore.Allocation, routes []boltstore.Route, origins []ASNIdentity, geofeeds []boltstore.Geofeed, options LookupOptions) *LookupResponse {
 	allocation := narrowestAllocation(allocations)
 	bestRoutes := narrowestRoutes(routes)
 	geofeed := narrowestGeofeed(geofeeds)
-	response := buildSelectedBboltResponse(ip, allocation, bestRoutes, geofeed)
+	response := buildSelectedBboltResponse(ip, allocation, bestRoutes, origins, geofeed)
 	if response == nil {
 		return nil
 	}
@@ -428,17 +438,21 @@ func buildBboltResponse(ip ipkey.RuntimeIP, allocations []boltstore.Allocation, 
 // buildCompactBboltResponse avoids the source slices and re-selection work
 // needed for details=full. The immutable selectors have already chosen the
 // sole allocation and geofeed matching the compact response contract.
-func buildCompactBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Allocation, routes []boltstore.Route, geofeed *boltstore.Geofeed) *LookupResponse {
-	return buildSelectedBboltResponse(ip, allocation, routes, geofeed)
+func buildCompactBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Allocation, routes []boltstore.Route, origins []ASNIdentity, geofeed *boltstore.Geofeed) *LookupResponse {
+	return buildSelectedBboltResponse(ip, allocation, routes, origins, geofeed)
 }
 
-func buildSelectedBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Allocation, routes []boltstore.Route, geofeed *boltstore.Geofeed) *LookupResponse {
+func buildSelectedBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Allocation, routes []boltstore.Route, origins []ASNIdentity, geofeed *boltstore.Geofeed) *LookupResponse {
 	if allocation == nil && len(routes) == 0 && geofeed == nil {
 		return nil
 	}
 
 	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
 	response.Network.ASNs = bboltASNs(routes)
+	response.Network.Origins = origins
+	if response.Network.Origins == nil {
+		response.Network.Origins = []ASNIdentity{}
+	}
 	if len(response.Network.ASNs) == 1 {
 		response.Network.ASN = &response.Network.ASNs[0]
 		response.Network.ASNumber = asNumber(response.Network.ASN)
@@ -584,6 +598,44 @@ func bboltASNs(routes []boltstore.Route) []string {
 		result = append(result, value.name)
 	}
 	return result
+}
+
+// bboltOriginIdentities resolves the selected route origins inside the same
+// read transaction as the IP lookup. The aut-num records are producer data;
+// this never performs a network request or an independent API lookup.
+func bboltOriginIdentities(transaction *bbolt.Tx, routes []boltstore.Route) ([]ASNIdentity, error) {
+	asns := bboltASNs(routes)
+	if len(asns) == 0 {
+		return []ASNIdentity{}, nil
+	}
+	numbers := make(map[string]uint32, len(asns))
+	for _, route := range routes {
+		asn := strings.ToUpper(strings.TrimSpace(route.OriginASN))
+		if asn != "" {
+			numbers[asn] = route.ASNumber
+		}
+	}
+	autnums := transaction.Bucket(boltstore.BucketAutnums)
+	if autnums == nil {
+		return nil, errors.New("bbolt aut-num bucket is missing")
+	}
+	origins := make([]ASNIdentity, 0, len(asns))
+	for _, asn := range asns {
+		origin := ASNIdentity{ASN: asn, ASNumber: int(numbers[asn])}
+		if origin.ASNumber > 0 {
+			raw := autnums.Get(boltstore.ASNKey(uint32(origin.ASNumber)))
+			if raw != nil {
+				autnum, err := boltstore.DecodeAutnumIdentity(raw)
+				if err != nil {
+					return nil, fmt.Errorf("decode aut-num %s: %w", asn, err)
+				}
+				origin.Name = optional(autnum.Name)
+				origin.Organization = optional(autnum.Organization)
+			}
+		}
+		origins = append(origins, origin)
+	}
+	return origins, nil
 }
 
 func bboltDetails(allocations []boltstore.Allocation, routes []boltstore.Route, geofeeds []boltstore.Geofeed) *LookupDetails {

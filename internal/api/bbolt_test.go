@@ -33,7 +33,7 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lookup == nil || lookup.Registry == nil || *lookup.Registry != "apnic" || len(lookup.Network.ASNs) != 2 || lookup.Location.City == nil || *lookup.Location.City != "South Brisbane" {
+	if lookup == nil || lookup.Registry == nil || *lookup.Registry != "apnic" || len(lookup.Network.ASNs) != 2 || len(lookup.Network.Origins) != 2 || lookup.Network.Origins[0].Name == nil || *lookup.Network.Origins[0].Name != "CLOUDFLARENET" || lookup.Network.Origins[0].Organization == nil || *lookup.Network.Origins[0].Organization != "ORG-CLOUD14-ARIN" || lookup.Network.Origins[1].Name != nil || lookup.Location.City == nil || *lookup.Location.City != "South Brisbane" {
 		t.Fatalf("lookup = %#v", lookup)
 	}
 	if lookup.Details == nil || len(lookup.Details.Allocations) != 2 || len(lookup.Details.Routes) != 2 || len(lookup.Details.Geofeeds) != 2 {
@@ -315,6 +315,7 @@ func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.RuntimeIP) (*
 	address := ip.Address
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
+	var origins []ASNIdentity
 	var geofeeds []boltstore.Geofeed
 	err := repository.db.View(func(transaction *bbolt.Tx) error {
 		allocationIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
@@ -339,6 +340,10 @@ func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.RuntimeIP) (*
 			}
 			routes = append(routes, record)
 		}
+		origins, err = bboltOriginIdentities(transaction, routes)
+		if err != nil {
+			return err
+		}
 		geofeedIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
 		if err != nil {
 			return err
@@ -355,7 +360,7 @@ func lookupCompactPrefixScan(repository *BboltRepository, ip ipkey.RuntimeIP) (*
 	if err != nil {
 		return nil, err
 	}
-	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{}), nil
+	return buildBboltResponse(ip, allocations, routes, origins, geofeeds, LookupOptions{}), nil
 }
 
 // lookupCompactRouteLPMPrefixScan matches the schema-3 compact path: routes
@@ -365,6 +370,7 @@ func lookupCompactRouteLPMPrefixScan(repository *BboltRepository, ip ipkey.Runti
 	address := ip.Address
 	var allocations []boltstore.Allocation
 	var routes []boltstore.Route
+	var origins []ASNIdentity
 	var geofeeds []boltstore.Geofeed
 	err := repository.db.View(func(transaction *bbolt.Tx) error {
 		allocationIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketAllocationIndex), address, maxCandidates)
@@ -393,6 +399,10 @@ func lookupCompactRouteLPMPrefixScan(repository *BboltRepository, ip ipkey.Runti
 			}
 			routes = append(routes, record)
 		}
+		origins, err = bboltOriginIdentities(transaction, routes)
+		if err != nil {
+			return err
+		}
 		geofeedIDs, err := matchingIPIDs(context.Background(), transaction.Bucket(boltstore.BucketGeofeedIndex), address, maxCandidates)
 		if err != nil {
 			return err
@@ -409,7 +419,7 @@ func lookupCompactRouteLPMPrefixScan(repository *BboltRepository, ip ipkey.Runti
 	if err != nil {
 		return nil, err
 	}
-	return buildBboltResponse(ip, allocations, routes, geofeeds, LookupOptions{}), nil
+	return buildBboltResponse(ip, allocations, routes, origins, geofeeds, LookupOptions{}), nil
 }
 
 func BenchmarkBboltRouteLPM(b *testing.B) {

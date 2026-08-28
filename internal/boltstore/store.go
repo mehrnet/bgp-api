@@ -539,6 +539,35 @@ func DecodeAutnum(value []byte) (Autnum, error) {
 	return result, r.done()
 }
 
+// DecodeAutnumIdentity reads only the registered identity fields included in
+// the compact IP response. Provenance stays in the bbolt record for resource
+// lookups and details=full without allocating it for a normal IP lookup.
+func DecodeAutnumIdentity(value []byte) (Autnum, error) {
+	r := decoder{value: value}
+	result := Autnum{}
+	var err error
+	if result.ASNumber, err = r.uint32(); err != nil {
+		return result, err
+	}
+	for range 3 { // ASN, registry, country
+		if err = r.skipString(); err != nil {
+			return result, err
+		}
+	}
+	if result.Name, err = r.string(); err != nil {
+		return result, err
+	}
+	if result.Organization, err = r.string(); err != nil {
+		return result, err
+	}
+	for range 7 { // status, timestamps, source, maintainers, abuse, description
+		if err := r.skipString(); err != nil {
+			return result, err
+		}
+	}
+	return result, r.done()
+}
+
 func EncodeSummary(value RangeSummary) []byte {
 	w := encoder{}
 	w.byte(value.PrefixLength)

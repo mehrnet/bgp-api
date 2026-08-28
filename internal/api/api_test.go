@@ -17,6 +17,7 @@ type fakeRepository struct{}
 func (fakeRepository) Lookup(_ context.Context, ip ipkey.RuntimeIP, options LookupOptions) (*LookupResponse, error) {
 	response := &LookupResponse{IP: ip.Canonical, Version: ip.Version}
 	response.Network.ASNs = []string{}
+	response.Network.Origins = []ASNIdentity{}
 	if options.Details == LookupDetailsFull {
 		response.Details = &LookupDetails{Allocations: []LookupDetailRecord{{StartIP: "1.1.1.0", EndIP: "1.1.1.255", Version: 4}}}
 	}

@@ -70,6 +70,15 @@ type Config struct {
 
 type nullableString = *string
 
+// ASNIdentity is the registered aut-num identity for a selected route origin.
+// It is source data, not an assertion that the ASN owns the allocation.
+type ASNIdentity struct {
+	ASN          string         `json:"asn"`
+	ASNumber     int            `json:"as_number"`
+	Name         nullableString `json:"name"`
+	Organization nullableString `json:"organization"`
+}
+
 type LookupResponse struct {
 	Meta             *ResponseMeta  `json:"meta,omitempty"`
 	IP               string         `json:"ip"`
@@ -83,6 +92,7 @@ type LookupResponse struct {
 		EndIP        nullableString `json:"end_ip"`
 		ASN          nullableString `json:"asn"`
 		ASNs         []string       `json:"asns"`
+		Origins      []ASNIdentity  `json:"origins"`
 		ASNumber     *int           `json:"as_number"`
 		Status       nullableString `json:"status"`
 		AbuseContact nullableString `json:"abuse_contact"`

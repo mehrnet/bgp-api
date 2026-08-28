@@ -95,6 +95,13 @@ func (cache *responseCache) Acquire(key string) (value []byte, cached bool, rele
 			return value, true, nil
 		}
 		cache.flightsM.Lock()
+		// A leader can publish between the first cache check and this lock.
+		// Recheck while holding the flight lock so a late arrival cannot create
+		// a second producer after the completed flight has been removed.
+		if value, cached := cache.Get(key); cached {
+			cache.flightsM.Unlock()
+			return value, true, nil
+		}
 		flight, waiting := cache.flights[key]
 		if !waiting {
 			flight = &responseCacheFlight{done: make(chan struct{})}

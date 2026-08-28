@@ -60,6 +60,7 @@ func resolveCachePlan(requested string, memoryTotal, databaseBytes, selectorByte
 		plan.Effective = "full"
 		plan.CompactCacheMiB = 128
 		plan.ResourceCacheMiB = 32
+		plan.PreloadSelectors = false
 		plan.WarmDatasetPageCache = true
 		return plan
 	}
@@ -68,12 +69,15 @@ func resolveCachePlan(requested string, memoryTotal, databaseBytes, selectorByte
 		plan.CompactCacheMiB = 256
 		plan.ResourceCacheMiB = 64
 		plan.PreloadSelectors = true
+		plan.WarmDatasetPageCache = false
 		return plan
 	}
 	minimalPlan := func() cachePlan {
 		plan.Effective = "minimal"
 		plan.CompactCacheMiB = 64
 		plan.ResourceCacheMiB = 16
+		plan.PreloadSelectors = false
+		plan.WarmDatasetPageCache = false
 		return plan
 	}
 

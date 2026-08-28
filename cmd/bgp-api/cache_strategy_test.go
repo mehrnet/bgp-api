@@ -10,12 +10,14 @@ func TestResolveCachePlan(t *testing.T) {
 		requested string
 		memory    int64
 		want      string
+		selectors bool
+		pageCache bool
 		wantError bool
 	}{
 		{name: "small auto", requested: "auto", memory: gibibyte, want: "minimal"},
-		{name: "two gibibytes auto", requested: "auto", memory: 2 * gibibyte, want: "balanced"},
-		{name: "four gibibytes auto", requested: "auto", memory: 4 * gibibyte, want: "balanced"},
-		{name: "large auto", requested: "auto", memory: 6 * gibibyte, want: "full"},
+		{name: "two gibibytes auto", requested: "auto", memory: 2 * gibibyte, want: "balanced", selectors: true},
+		{name: "four gibibytes auto", requested: "auto", memory: 4 * gibibyte, want: "balanced", selectors: true},
+		{name: "large auto", requested: "auto", memory: 6 * gibibyte, want: "full", pageCache: true},
 		{name: "full on four gibibytes", requested: "full", memory: 4 * gibibyte, wantError: true},
 		{name: "explicit minimal", requested: "minimal", memory: 8 * gibibyte, want: "minimal"},
 	}
@@ -33,6 +35,9 @@ func TestResolveCachePlan(t *testing.T) {
 			}
 			if plan.Effective != test.want {
 				t.Fatalf("effective strategy = %q, want %q", plan.Effective, test.want)
+			}
+			if plan.PreloadSelectors != test.selectors || plan.WarmDatasetPageCache != test.pageCache {
+				t.Fatalf("plan preload=%t page_cache=%t, want preload=%t page_cache=%t", plan.PreloadSelectors, plan.WarmDatasetPageCache, test.selectors, test.pageCache)
 			}
 		})
 	}

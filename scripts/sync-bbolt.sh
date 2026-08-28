@@ -21,9 +21,12 @@ readonly CADDY_CONFIG="${BGP_API_CADDY_CONFIG:-/etc/caddy/Caddyfile}"
 readonly CADDY_MANAGED_CONFIG="${BGP_API_CADDY_MANAGED_CONFIG:-/etc/caddy/conf.d/mehrnet-bgp-api.caddy}"
 readonly LOCK_FILE="${BGP_API_LOCK_FILE:-/run/lock/mehrnet-bgp-api-sync.lock}"
 readonly BLUE_GREEN_MODE="${BGP_API_BLUE_GREEN:-auto}"
+readonly STARTUP_TIMEOUT_SECONDS="${BGP_API_STARTUP_TIMEOUT_SECONDS:-300}"
 
 say() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 die() { say "error: $*" >&2; exit 1; }
+
+[[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STARTUP_TIMEOUT_SECONDS must be a positive integer"
 
 for command in awk cat chown cp curl date df flock grep head install jq mktemp mv rm sed sha256sum sleep stat systemctl tar tr zstd; do
   command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
@@ -247,7 +250,7 @@ switch_caddy() {
 health_check() {
   local port="$1" token response
   token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
-  for ((attempt = 0; attempt < 30; attempt++)); do
+  for ((attempt = 0; attempt < STARTUP_TIMEOUT_SECONDS; attempt++)); do
     if response="$(curl --fail --silent --show-error --max-time 3 \
       -H "X-BGP-API-Origin-Token: $token" \
       "http://127.0.0.1:$port/v1/health" 2>/dev/null)" && \

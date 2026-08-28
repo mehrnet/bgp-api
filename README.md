@@ -177,6 +177,7 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `BGP_API_SECONDARY_DATABASE_PATH` | `/var/lib/bgp-api/secondary.bbolt` | Secondary update slot |
 | `LISTEN_ADDR` | `127.0.0.1:3102` | HTTP listener for this service |
 | `BGP_API_BLUE_GREEN` | `auto` | `auto`, `1`, or `0` |
+| `BGP_API_STARTUP_TIMEOUT_SECONDS` | `300` | Maximum wait for a staged API slot to become healthy |
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
 | `BGP_API_COMPACT_CACHE_MIB` | `256` | In-process cache budget for default IP responses |

@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,11 +48,33 @@ func main() {
 		log.Printf("validated bbolt dataset %s", releaseTag)
 		return
 	}
-	if environmentBool("BGP_API_PRELOAD_COMPACT_SELECTORS", false) {
-		if err := preloadCompactSelectors(store); err != nil {
-			log.Fatalf("preload compact selectors: %v", err)
-		}
+	databaseBytes, err := store.DatabaseSize()
+	if err != nil {
+		log.Fatalf("inspect bbolt dataset: %v", err)
 	}
+	selectorBytes, err := store.CompactSelectorBytes()
+	if err != nil {
+		log.Fatalf("inspect compact selectors: %v", err)
+	}
+	memoryTotal, err := hostMemoryTotal()
+	if err != nil {
+		log.Printf("could not inspect host memory; using the minimal cache strategy: %v", err)
+	}
+	cachePlan, err := resolveCachePlan(os.Getenv("BGP_API_CACHE_STRATEGY"), memoryTotal, databaseBytes, selectorBytes)
+	if err != nil {
+		log.Fatalf("select cache strategy: %v", err)
+	}
+	if cacheBytes, configured := environmentOptionalInt("BGP_API_COMPACT_CACHE_MIB"); configured {
+		cachePlan.CompactCacheMiB = cacheBytes
+	}
+	if cacheBytes, configured := environmentOptionalInt("BGP_API_RESOURCE_CACHE_MIB"); configured {
+		cachePlan.ResourceCacheMiB = cacheBytes
+	}
+	if cachePlan.Effective == "full" && memoryTotal < fullCacheRequirement(cachePlan) {
+		log.Fatalf("select cache strategy: full cache strategy needs at least %.1f GiB after configured response-cache budgets; this host has %.1f GiB", float64(fullCacheRequirement(cachePlan))/float64(gibibyte), float64(memoryTotal)/float64(gibibyte))
+	}
+	deferCacheWarmup := environmentBool("BGP_API_DEFER_CACHE_WARMUP", false)
+	log.Printf("cache strategy requested=%s effective=%s memory=%.1f GiB database=%.1f GiB selectors=%.1f MiB compact_cache=%d MiB resource_cache=%d MiB deferred=%t", cachePlan.Requested, cachePlan.Effective, float64(memoryTotal)/float64(gibibyte), float64(databaseBytes)/float64(gibibyte), float64(selectorBytes)/float64(mebibyte), cachePlan.CompactCacheMiB, cachePlan.ResourceCacheMiB, deferCacheWarmup)
 
 	config := api.Config{
 		AllowedOrigins:  allowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS_JSON")),
@@ -61,9 +84,10 @@ func main() {
 			Commit:  stringPointer(commit),
 			BuiltAt: stringPointer(builtAt),
 		},
-		CompactResponseCacheBytes:  environmentInt("BGP_API_COMPACT_CACHE_MIB", 256) << 20,
-		ResourceResponseCacheBytes: environmentInt("BGP_API_RESOURCE_CACHE_MIB", 64) << 20,
+		CompactResponseCacheBytes:  cachePlan.CompactCacheMiB << 20,
+		ResourceResponseCacheBytes: cachePlan.ResourceCacheMiB << 20,
 	}
+	warmer := runtimeCacheWarmer{store: store, plan: cachePlan}
 	handler := api.New(store, config)
 	server := &http.Server{
 		Addr:              listenAddress(),
@@ -78,16 +102,17 @@ func main() {
 			log.Fatalf("serve: %v", err)
 		}
 	}()
+	if deferCacheWarmup {
+		log.Printf("cache warmup deferred until SIGUSR1")
+	} else {
+		warmer.Start()
+	}
 
 	signals := make(chan os.Signal, 2)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
 	for received := range signals {
 		if received == syscall.SIGUSR1 {
-			go func() {
-				if err := preloadCompactSelectors(store); err != nil {
-					log.Printf("preload compact selectors: %v", err)
-				}
-			}()
+			warmer.Start()
 			continue
 		}
 		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -97,6 +122,47 @@ func main() {
 		cancel()
 		return
 	}
+}
+
+type runtimeCacheWarmer struct {
+	store   *api.BboltRepository
+	plan    cachePlan
+	mu      sync.Mutex
+	running bool
+}
+
+func (warmer *runtimeCacheWarmer) Start() {
+	warmer.mu.Lock()
+	if warmer.running {
+		warmer.mu.Unlock()
+		return
+	}
+	warmer.running = true
+	warmer.mu.Unlock()
+	go func() {
+		defer func() {
+			warmer.mu.Lock()
+			warmer.running = false
+			warmer.mu.Unlock()
+		}()
+		if warmer.plan.PreloadSelectors {
+			if err := preloadCompactSelectors(warmer.store); err != nil {
+				log.Printf("preload compact selectors: %v", err)
+				return
+			}
+		}
+		if warmer.plan.WarmDatasetPageCache {
+			log.Printf("warming %.1f GiB bbolt dataset through the kernel page cache", float64(warmer.plan.DatabaseBytes)/float64(gibibyte))
+			warmup, err := warmer.store.WarmDataset(context.Background())
+			if err != nil {
+				log.Printf("warm bbolt dataset: %v", err)
+				return
+			}
+			if !warmup.AlreadyWarm {
+				log.Printf("warmed %.1f GiB bbolt dataset through the kernel page cache", float64(warmup.Bytes)/float64(gibibyte))
+			}
+		}
+	}()
 }
 
 func preloadCompactSelectors(store *api.BboltRepository) error {
@@ -130,6 +196,18 @@ func environmentInt(name string, fallback int) int {
 		log.Fatalf("%s must be a positive integer", name)
 	}
 	return parsed
+}
+
+func environmentOptionalInt(name string) (int, bool) {
+	value := os.Getenv(name)
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		log.Fatalf("%s must be a positive integer", name)
+	}
+	return parsed, true
 }
 
 func environmentBool(name string, fallback bool) bool {

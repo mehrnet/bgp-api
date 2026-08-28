@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,10 +24,12 @@ import (
 
 type BboltRepository struct {
 	db                *bbolt.DB
+	path              string
 	metadata          *DatasetMetadata
 	overlapSlots      chan struct{}
 	selectorPreload   atomic.Pointer[compactSelectors]
 	selectorPreloadMu sync.Mutex
+	datasetWarmState  atomic.Uint32
 }
 
 // CompactSelectorPreload describes the immutable selector data copied out of
@@ -40,6 +44,21 @@ type compactSelectors struct {
 	geofeeds    [2][]byte
 	bytes       int64
 }
+
+// DatasetWarmup describes a best-effort sequential read of the immutable
+// bbolt file. The operating system retains the read pages in its page cache
+// while memory permits; this is intentionally not a second Go heap copy.
+type DatasetWarmup struct {
+	Bytes       int64
+	AlreadyWarm bool
+}
+
+const (
+	datasetWarmIdle uint32 = iota
+	datasetWarmInProgress
+	datasetWarmComplete
+	datasetWarmBufferBytes = 8 << 20
+)
 
 var errBboltQueryTooBroad = errors.New("bbolt overlap scan limit exceeded")
 var errInvalidRangeCursor = errors.New("invalid range cursor")
@@ -59,7 +78,7 @@ func NewBboltRepository(path string) (*BboltRepository, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open bbolt database: %w", err)
 	}
-	repository := &BboltRepository{db: db, overlapSlots: make(chan struct{}, 2)}
+	repository := &BboltRepository{db: db, path: path, overlapSlots: make(chan struct{}, 2)}
 	if err := db.View(func(tx *bbolt.Tx) error {
 		for _, name := range boltstore.RequiredBuckets {
 			if tx.Bucket(name) == nil {
@@ -87,6 +106,52 @@ func NewBboltRepository(path string) (*BboltRepository, error) {
 }
 
 func (repository *BboltRepository) Close() error { return repository.db.Close() }
+
+// DatabaseSize returns the immutable bbolt file size used to select a safe
+// runtime cache strategy.
+func (repository *BboltRepository) DatabaseSize() (int64, error) {
+	info, err := os.Stat(repository.path)
+	if err != nil {
+		return 0, fmt.Errorf("stat bbolt database: %w", err)
+	}
+	return info.Size(), nil
+}
+
+// CompactSelectorBytes returns the exact size of the six selector values
+// without retaining them in the Go heap.
+func (repository *BboltRepository) CompactSelectorBytes() (int64, error) {
+	if selectors := repository.selectorPreload.Load(); selectors != nil {
+		return selectors.bytes, nil
+	}
+	var total int64
+	err := repository.db.View(func(transaction *bbolt.Tx) error {
+		for _, entry := range []struct {
+			bucket []byte
+			key    func(uint8) []byte
+		}{
+			{bucket: boltstore.BucketAllocationLPM, key: boltstore.SelectionLPMKey},
+			{bucket: boltstore.BucketRouteLPM, key: boltstore.RouteLPMKey},
+			{bucket: boltstore.BucketGeofeedLPM, key: boltstore.SelectionLPMKey},
+		} {
+			bucket := transaction.Bucket(entry.bucket)
+			if bucket == nil {
+				return fmt.Errorf("bbolt selector bucket %q is missing", entry.bucket)
+			}
+			for _, version := range []uint8{4, 6} {
+				value := bucket.Get(entry.key(version))
+				if len(value) == 0 {
+					return fmt.Errorf("bbolt selector %q for IPv%d is missing", entry.bucket, version)
+				}
+				total += int64(len(value))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
 
 // PreloadCompactSelectors copies the six immutable IPv4/IPv6 selector values
 // into the Go heap. It is intended to run once before the HTTP server accepts
@@ -136,6 +201,49 @@ func (repository *BboltRepository) PreloadCompactSelectors() (CompactSelectorPre
 	}
 	repository.selectorPreload.Store(selectors)
 	return CompactSelectorPreload{Bytes: selectors.bytes}, nil
+}
+
+// WarmDataset reads the complete immutable bbolt file sequentially with a
+// bounded buffer. It warms the kernel page cache for broad and full-detail
+// queries without duplicating the database in the Go heap.
+func (repository *BboltRepository) WarmDataset(ctx context.Context) (DatasetWarmup, error) {
+	if repository.datasetWarmState.Load() == datasetWarmComplete {
+		bytes, err := repository.DatabaseSize()
+		return DatasetWarmup{Bytes: bytes, AlreadyWarm: true}, err
+	}
+	if !repository.datasetWarmState.CompareAndSwap(datasetWarmIdle, datasetWarmInProgress) {
+		return DatasetWarmup{}, errors.New("bbolt dataset warmup is already in progress")
+	}
+	completed := false
+	defer func() {
+		if completed {
+			repository.datasetWarmState.Store(datasetWarmComplete)
+			return
+		}
+		repository.datasetWarmState.Store(datasetWarmIdle)
+	}()
+
+	file, err := os.Open(repository.path)
+	if err != nil {
+		return DatasetWarmup{}, fmt.Errorf("open bbolt database for warmup: %w", err)
+	}
+	defer file.Close()
+	buffer := make([]byte, datasetWarmBufferBytes)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return DatasetWarmup{}, err
+		}
+		read, readErr := file.Read(buffer)
+		total += int64(read)
+		if readErr == io.EOF {
+			completed = true
+			return DatasetWarmup{Bytes: total}, nil
+		}
+		if readErr != nil {
+			return DatasetWarmup{}, fmt.Errorf("warm bbolt database: %w", readErr)
+		}
+	}
 }
 
 func (repository *BboltRepository) DatasetMetadata(context.Context) (*DatasetMetadata, error) {

@@ -178,24 +178,35 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `LISTEN_ADDR` | `127.0.0.1:3102` | HTTP listener for this service |
 | `BGP_API_BLUE_GREEN` | `auto` | `auto`, `1`, or `0` |
 | `BGP_API_STARTUP_TIMEOUT_SECONDS` | `300` | Maximum wait for a staged API slot to become healthy |
+| `BGP_API_CACHE_STRATEGY` | `auto` | `auto`, `minimal`, `balanced`, or `full` |
+| `BGP_API_DEFER_CACHE_WARMUP` | `0` | Start serving before cache warmup; the updater uses this internally |
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
-| `BGP_API_COMPACT_CACHE_MIB` | `256` | In-process cache budget for default IP responses |
-| `BGP_API_RESOURCE_CACHE_MIB` | `64` | In-process cache budget for prefix, range, and ASN responses |
-| `BGP_API_PRELOAD_COMPACT_SELECTORS` | `0` | Copy the compact IPv4/IPv6 selector indexes into Go memory during startup |
+| `BGP_API_COMPACT_CACHE_MIB` | strategy default | Override the in-process cache budget for default IP responses |
+| `BGP_API_RESOURCE_CACHE_MIB` | strategy default | Override the in-process cache budget for prefix, range, and ASN responses |
 | `GOMAXPROCS` | Go default | CPU limit |
 | `GOMEMLIMIT` | Go default | Soft Go heap limit |
 
-On hosts with at least 2 GiB of RAM, the installer enables compact-selector preload and
-uses `GOMEMLIMIT=1024MiB`. The preload copies approximately 508 MiB of immutable
-allocation, route, and geofeed selector data into the Go heap, avoiding bbolt mmap page
-faults on first-seen default IP lookups. On smaller hosts it remains disabled and the
-installer uses `GOMEMLIMIT=384MiB`. Both profiles use `GOMAXPROCS=2`, a `256 MiB`
-IP-response cache, and a `64 MiB` resource-response cache. bbolt maps the remainder of
-the database read-only, so the operating system can reclaim those pages when needed.
-During a blue-green update, the staged slot starts without the selector copy. After Caddy
-switches traffic and the old slot drains, the updater signals the new active process to
-preload it in the background. This avoids retaining two selector copies at once.
+`auto` selects the safest profile from the deployed bbolt file size and `MemTotal`:
+
+| Profile | Runtime behavior |
+| --- | --- |
+| `minimal` | `64 MiB` compact cache, `16 MiB` resource cache, no dataset preload |
+| `balanced` | `256 MiB` compact cache, `64 MiB` resource cache, and the roughly `508 MiB` compact selector copy |
+| `full` | `128 MiB` compact cache, `32 MiB` resource cache, then a sequential warm of the immutable bbolt file through the Linux page cache |
+
+`full` is not a second Go copy of the database. It needs the dataset, response-cache
+budget, and a `768 MiB` operating-system reserve to fit at once. With the current
+roughly `3.6 GiB` dataset, a 4 GiB host does **not** qualify; `auto` selects `balanced`
+there. A 5 GiB-or-larger host can usually use `full`, while bbolt still lets Linux reclaim
+pages under pressure.
+
+The active server starts accepting traffic before its selected cache begins warming. In a
+blue-green update the staged slot explicitly defers warmup, Caddy switches only after its
+health check passes, and the old slot drains. The updater then sends `SIGUSR1` to warm the
+new active slot in the background. Its in-process response caches start empty by design,
+so update traffic remains available while the new selector or page cache reaches its hot
+state.
 
 ## Releases and datasets
 

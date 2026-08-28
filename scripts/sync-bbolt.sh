@@ -127,15 +127,6 @@ env_file_for_slot() {
   esac
 }
 
-env_bool() {
-  local name="$1" path="$2" value
-  value="$(env_value "$name" "$path")"
-  case "${value,,}" in
-    1|true|yes|on) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 set_env_value() {
   local name="$1" value="$2" path="$3" temporary owner group mode
   owner="$(stat -c '%u' "$path")"
@@ -414,23 +405,16 @@ if [ "$blue_green" = true ]; then
   mv "$new_database" "$target_database"
   chown bgpapi:bgpapi "$target_database"
   chmod 0440 "$target_database"
-  deferred_preload=false
-  if env_bool BGP_API_PRELOAD_COMPACT_SELECTORS "$target_env_file"; then
-    # Do not hold two 508 MiB selector copies during a blue-green handover.
-    # systemd reads this file before exec, so restoring it after start affects
-    # the next process only; SIGUSR1 triggers the new active process later.
-    set_env_value BGP_API_PRELOAD_COMPACT_SELECTORS 0 "$target_env_file"
-    deferred_preload=true
-  fi
+  # A full page-cache warm or selector preload must not run in both API slots
+  # at once. systemd reads this file before exec, so restoring it after start
+  # affects the next process only; SIGUSR1 starts the active slot's warmup.
+  deferred_cache_warmup_before="$(env_value BGP_API_DEFER_CACHE_WARMUP "$target_env_file")"
+  set_env_value BGP_API_DEFER_CACHE_WARMUP 1 "$target_env_file"
   if ! systemctl start "$target_service"; then
-    if [ "$deferred_preload" = true ]; then
-      set_env_value BGP_API_PRELOAD_COMPACT_SELECTORS 1 "$target_env_file"
-    fi
+    set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
     die "$target_service could not start"
   fi
-  if [ "$deferred_preload" = true ]; then
-    set_env_value BGP_API_PRELOAD_COMPACT_SELECTORS 1 "$target_env_file"
-  fi
+  set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
   if ! health_check "$target_port"; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
@@ -490,10 +474,8 @@ if [ "$blue_green" = true ]; then
   rm -f -- "$active_database"
   systemctl disable "$active_service" >/dev/null 2>&1 || true
   write_active_slot "$target_slot"
-  if [ "$deferred_preload" = true ]; then
-    say "preloading compact selectors in the active $target_service slot"
-    systemctl kill --signal=USR1 "$target_service"
-  fi
+  say "warming runtime caches in the active $target_service slot"
+  systemctl kill --signal=USR1 "$target_service"
 else
   say "using stop-and-replace activation for release $release_tag"
   stop_service "$SERVICE"

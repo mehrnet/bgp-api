@@ -152,6 +152,28 @@ func TestBboltRepositoryPreloadsCompactSelectors(t *testing.T) {
 	}
 }
 
+func TestBboltRepositoryWarmsImmutableDataset(t *testing.T) {
+	repository := testBboltRepository(t)
+	warmup, err := repository.WarmDataset(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytes, err := repository.DatabaseSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warmup.Bytes != bytes || warmup.AlreadyWarm {
+		t.Fatalf("warmup = %#v, database bytes = %d", warmup, bytes)
+	}
+	repeated, err := repository.WarmDataset(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Bytes != bytes || !repeated.AlreadyWarm {
+		t.Fatalf("repeated warmup = %#v, database bytes = %d", repeated, bytes)
+	}
+}
+
 func TestBboltRangePaginationUsesProducerRangeIndex(t *testing.T) {
 	repository := testBboltRepository(t)
 	ctx := context.Background()

@@ -38,6 +38,13 @@ type CompactSelectorPreload struct {
 	Bytes int64
 }
 
+// CompactSelectorRelease reports immutable selector bytes removed from the
+// Go heap. Requests remain correct and fall back to the bbolt mmap until a
+// later preload restores the selectors.
+type CompactSelectorRelease struct {
+	Bytes int64
+}
+
 type compactSelectors struct {
 	allocations [2][]byte
 	routes      [2][]byte
@@ -201,6 +208,19 @@ func (repository *BboltRepository) PreloadCompactSelectors() (CompactSelectorPre
 	}
 	repository.selectorPreload.Store(selectors)
 	return CompactSelectorPreload{Bytes: selectors.bytes}, nil
+}
+
+// DropCompactSelectors frees the optional Go-heap selector copy. It is used
+// only during memory-constrained blue-green staging; bbolt remains the source
+// of truth for all lookups.
+func (repository *BboltRepository) DropCompactSelectors() CompactSelectorRelease {
+	repository.selectorPreloadMu.Lock()
+	selectors := repository.selectorPreload.Swap(nil)
+	repository.selectorPreloadMu.Unlock()
+	if selectors == nil {
+		return CompactSelectorRelease{}
+	}
+	return CompactSelectorRelease{Bytes: selectors.bytes}
 }
 
 // WarmDataset reads the complete immutable bbolt file sequentially with a

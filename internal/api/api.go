@@ -175,9 +175,55 @@ type errorResponse struct {
 }
 
 func New(repository Repository, config Config) http.Handler {
+	handler, _ := NewWithRuntime(repository, config)
+	return handler
+}
+
+// RuntimeCacheController manages optional serialized response caches without
+// exposing a public HTTP administration endpoint.
+type RuntimeCacheController struct {
+	compact  *responseCache
+	resource *responseCache
+}
+
+type RuntimeCacheRelease struct {
+	CompactEntries  int
+	CompactBytes    int
+	ResourceEntries int
+	ResourceBytes   int
+}
+
+func (controller *RuntimeCacheController) Enable() {
+	if controller == nil {
+		return
+	}
+	controller.compact.Enable()
+	controller.resource.Enable()
+}
+
+// DisableAndClear makes later requests bypass cache insertion until Enable is
+// called. It is intended for a soon-to-be-drained blue-green slot.
+func (controller *RuntimeCacheController) DisableAndClear() RuntimeCacheRelease {
+	if controller == nil {
+		return RuntimeCacheRelease{}
+	}
+	compact := controller.compact.DisableAndClear()
+	resource := controller.resource.DisableAndClear()
+	return RuntimeCacheRelease{
+		CompactEntries:  compact.Entries,
+		CompactBytes:    compact.Bytes,
+		ResourceEntries: resource.Entries,
+		ResourceBytes:   resource.Bytes,
+	}
+}
+
+// NewWithRuntime constructs the public handler plus a process-local cache
+// controller for service lifecycle management.
+func NewWithRuntime(repository Repository, config Config) (http.Handler, *RuntimeCacheController) {
 	compactCache := newCompactResponseCache(config.CompactResponseCacheBytes)
 	resourceCache := newResourceResponseCache(config.ResourceResponseCacheBytes)
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+	controller := &RuntimeCacheController{compact: compactCache, resource: resourceCache}
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if config.OriginAuthToken != "" && request.Header.Get("X-BGP-API-Origin-Token") != config.OriginAuthToken {
 			writeError(writer, http.StatusUnauthorized, "UNAUTHORIZED", "origin authorization required")
 			return
@@ -214,6 +260,7 @@ func New(repository Repository, config Config) http.Handler {
 			writeError(writer, http.StatusNotFound, "NOT_FOUND", "route not found")
 		}
 	})
+	return handler, controller
 }
 
 func health(writer http.ResponseWriter, request *http.Request, repository Repository, config Config) {

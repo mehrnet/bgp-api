@@ -152,6 +152,33 @@ func TestBboltRepositoryPreloadsCompactSelectors(t *testing.T) {
 	}
 }
 
+func TestBboltRepositoryDropsCompactSelectors(t *testing.T) {
+	repository := testBboltRepository(t)
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
+	before, err := repository.Lookup(context.Background(), ip, LookupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preload, err := repository.PreloadCompactSelectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := repository.DropCompactSelectors()
+	if release.Bytes != preload.Bytes || repository.selectorPreload.Load() != nil {
+		t.Fatalf("selector release = %#v", release)
+	}
+	after, err := repository.Lookup(context.Background(), ip, LookupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("selector release changed lookup response:\nbefore=%#v\nafter=%#v", before, after)
+	}
+	if repeated := repository.DropCompactSelectors(); repeated.Bytes != 0 {
+		t.Fatalf("repeated selector release = %#v", repeated)
+	}
+}
+
 func TestBboltRepositoryWarmsImmutableDataset(t *testing.T) {
 	repository := testBboltRepository(t)
 	warmup, err := repository.WarmDataset(context.Background())

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,7 +76,8 @@ func main() {
 		log.Fatalf("select cache strategy: full cache strategy needs at least %.1f GiB after configured response-cache budgets; this host has %.1f GiB", float64(fullCacheRequirement(cachePlan))/float64(gibibyte), float64(memoryTotal)/float64(gibibyte))
 	}
 	deferCacheWarmup := environmentBool("BGP_API_DEFER_CACHE_WARMUP", false)
-	log.Printf("cache strategy requested=%s effective=%s memory=%.1f GiB database=%.1f GiB selectors=%.1f MiB compact_cache=%d MiB resource_cache=%d MiB deferred=%t", cachePlan.Requested, cachePlan.Effective, float64(memoryTotal)/float64(gibibyte), float64(databaseBytes)/float64(gibibyte), float64(selectorBytes)/float64(mebibyte), cachePlan.CompactCacheMiB, cachePlan.ResourceCacheMiB, deferCacheWarmup)
+	runtimeCacheControl := environmentBool("BGP_API_RUNTIME_CACHE_CONTROL", false)
+	log.Printf("cache strategy requested=%s effective=%s memory=%.1f GiB database=%.1f GiB selectors=%.1f MiB compact_cache=%d MiB resource_cache=%d MiB deferred=%t runtime_cache_control=%t", cachePlan.Requested, cachePlan.Effective, float64(memoryTotal)/float64(gibibyte), float64(databaseBytes)/float64(gibibyte), float64(selectorBytes)/float64(mebibyte), cachePlan.CompactCacheMiB, cachePlan.ResourceCacheMiB, deferCacheWarmup, runtimeCacheControl)
 
 	config := api.Config{
 		AllowedOrigins:  allowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS_JSON")),
@@ -88,7 +91,7 @@ func main() {
 		ResourceResponseCacheBytes: cachePlan.ResourceCacheMiB << 20,
 	}
 	warmer := runtimeCacheWarmer{store: store, plan: cachePlan}
-	handler := api.New(store, config)
+	handler, runtimeCaches := api.NewWithRuntime(store, config)
 	server := &http.Server{
 		Addr:              listenAddress(),
 		Handler:           handler,
@@ -109,10 +112,19 @@ func main() {
 	}
 
 	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
 	for received := range signals {
 		if received == syscall.SIGUSR1 {
+			runtimeCaches.Enable()
 			warmer.Start()
+			continue
+		}
+		if received == syscall.SIGUSR2 {
+			if runtimeCacheControl {
+				releaseRuntimeCaches(store, runtimeCaches)
+			} else {
+				log.Printf("ignoring SIGUSR2 because BGP_API_RUNTIME_CACHE_CONTROL is disabled")
+			}
 			continue
 		}
 		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -122,6 +134,17 @@ func main() {
 		cancel()
 		return
 	}
+}
+
+func releaseRuntimeCaches(store *api.BboltRepository, caches *api.RuntimeCacheController) {
+	selectorRelease := store.DropCompactSelectors()
+	cacheRelease := caches.DisableAndClear()
+	log.Printf("released runtime caches: selectors=%.1f MiB compact_entries=%d compact=%.1f MiB resource_entries=%d resource=%.1f MiB", float64(selectorRelease.Bytes)/(1<<20), cacheRelease.CompactEntries, float64(cacheRelease.CompactBytes)/(1<<20), cacheRelease.ResourceEntries, float64(cacheRelease.ResourceBytes)/(1<<20))
+	go func() {
+		runtime.GC()
+		debug.FreeOSMemory()
+		log.Printf("requested runtime cache memory return to the operating system")
+	}()
 }
 
 type runtimeCacheWarmer struct {

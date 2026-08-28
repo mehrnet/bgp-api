@@ -3,6 +3,7 @@ package api
 import (
 	"container/list"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -20,6 +21,7 @@ type responseCache struct {
 	shards   [responseCacheShards]responseCacheShard
 	flights  map[string]*responseCacheFlight
 	flightsM sync.Mutex
+	enabled  atomic.Bool
 }
 
 type responseCacheShard struct {
@@ -39,6 +41,11 @@ type responseCacheEntry struct {
 
 type responseCacheFlight struct{ done chan struct{} }
 
+type responseCacheUsage struct {
+	Entries int
+	Bytes   int
+}
+
 func newCompactResponseCache(budget int) *responseCache {
 	return newResponseCache(budget, defaultCompactResponseCacheBytes, maxCompactResponseCacheEntryBytes)
 }
@@ -55,6 +62,7 @@ func newResponseCache(budget, fallback, maxEntry int) *responseCache {
 		return nil
 	}
 	cache := &responseCache{flights: make(map[string]*responseCacheFlight)}
+	cache.enabled.Store(true)
 	perShard := budget / responseCacheShards
 	remainder := budget % responseCacheShards
 	for index := range cache.shards {
@@ -70,7 +78,7 @@ func newResponseCache(budget, fallback, maxEntry int) *responseCache {
 }
 
 func (cache *responseCache) Get(key string) ([]byte, bool) {
-	if cache == nil {
+	if cache == nil || !cache.enabled.Load() {
 		return nil, false
 	}
 	shard := cache.shard(key)
@@ -87,14 +95,21 @@ func (cache *responseCache) Get(key string) ([]byte, bool) {
 // Acquire returns a cached response or makes the caller the single producer
 // for key. Call the returned release function exactly once for a producer.
 func (cache *responseCache) Acquire(key string) (value []byte, cached bool, release func()) {
-	if cache == nil {
+	if cache == nil || !cache.enabled.Load() {
 		return nil, false, func() {}
 	}
 	for {
+		if !cache.enabled.Load() {
+			return nil, false, func() {}
+		}
 		if value, cached := cache.Get(key); cached {
 			return value, true, nil
 		}
 		cache.flightsM.Lock()
+		if !cache.enabled.Load() {
+			cache.flightsM.Unlock()
+			return nil, false, func() {}
+		}
 		// A leader can publish between the first cache check and this lock.
 		// Recheck while holding the flight lock so a late arrival cannot create
 		// a second producer after the completed flight has been removed.
@@ -120,7 +135,7 @@ func (cache *responseCache) Acquire(key string) (value []byte, cached bool, rele
 }
 
 func (cache *responseCache) Add(key string, value []byte) {
-	if cache == nil {
+	if cache == nil || !cache.enabled.Load() {
 		return
 	}
 	shard := cache.shard(key)
@@ -130,6 +145,9 @@ func (cache *responseCache) Add(key string, value []byte) {
 	}
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
+	if !cache.enabled.Load() {
+		return
+	}
 	if existing, ok := shard.entries[key]; ok {
 		entry := existing.Value.(responseCacheEntry)
 		shard.used -= entry.size
@@ -159,6 +177,34 @@ func (cache *responseCache) Len() int {
 		shard.mu.Unlock()
 	}
 	return count
+}
+
+func (cache *responseCache) Enable() {
+	if cache != nil {
+		cache.enabled.Store(true)
+	}
+}
+
+// DisableAndClear prevents new entries and discards all serialized responses.
+// Existing requests continue safely; their producer may finish, but it cannot
+// repopulate a disabled cache.
+func (cache *responseCache) DisableAndClear() responseCacheUsage {
+	if cache == nil {
+		return responseCacheUsage{}
+	}
+	cache.enabled.Store(false)
+	var usage responseCacheUsage
+	for index := range cache.shards {
+		shard := &cache.shards[index]
+		shard.mu.Lock()
+		usage.Entries += shard.lru.Len()
+		usage.Bytes += shard.used
+		shard.entries = make(map[string]*list.Element)
+		shard.lru = list.New()
+		shard.used = 0
+		shard.mu.Unlock()
+	}
+	return usage
 }
 
 func (cache *responseCache) shard(key string) *responseCacheShard {

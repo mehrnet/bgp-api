@@ -217,6 +217,35 @@ func TestHandlerCachesOnlyDefaultCompactIPResponses(t *testing.T) {
 	}
 }
 
+func TestRuntimeCacheControllerDropsAndRestoresResponseCaching(t *testing.T) {
+	repository := &countingRepository{}
+	handler, controller := NewWithRuntime(repository, Config{CompactResponseCacheBytes: 1 << 20})
+	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1", nil)
+
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if repository.lookups != 1 {
+		t.Fatalf("warm cache lookup count = %d", repository.lookups)
+	}
+
+	release := controller.DisableAndClear()
+	if release.CompactEntries != 1 || release.CompactBytes < 1 {
+		t.Fatalf("cache release = %#v", release)
+	}
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if repository.lookups != 3 {
+		t.Fatalf("disabled cache lookup count = %d", repository.lookups)
+	}
+
+	controller.Enable()
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	handler.ServeHTTP(httptest.NewRecorder(), request)
+	if repository.lookups != 4 {
+		t.Fatalf("restored cache lookup count = %d", repository.lookups)
+	}
+}
+
 func TestHandlerCachesCanonicalResourceResponses(t *testing.T) {
 	repository := &countingResourceRepository{}
 	handler := New(repository, Config{ResourceResponseCacheBytes: 1 << 20})

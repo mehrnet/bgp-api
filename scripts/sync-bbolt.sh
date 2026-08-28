@@ -24,11 +24,13 @@ readonly CADDY_MANAGED_CONFIG="${BGP_API_CADDY_MANAGED_CONFIG:-/etc/caddy/conf.d
 readonly LOCK_FILE="${BGP_API_LOCK_FILE:-/run/lock/mehrnet-bgp-api-sync.lock}"
 readonly BLUE_GREEN_MODE="${BGP_API_BLUE_GREEN:-auto}"
 readonly STARTUP_TIMEOUT_SECONDS="${BGP_API_STARTUP_TIMEOUT_SECONDS:-300}"
+readonly STAGE_MEMORY_RESERVE_MIB="${BGP_API_STAGE_MEMORY_RESERVE_MIB:-768}"
 
 say() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 die() { say "error: $*" >&2; exit 1; }
 
 [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STARTUP_TIMEOUT_SECONDS must be a positive integer"
+[[ "$STAGE_MEMORY_RESERVE_MIB" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STAGE_MEMORY_RESERVE_MIB must be a positive integer"
 
 for command in awk cat chown cp curl date df flock grep head install jq mktemp mv rm sed sha256sum sleep stat systemctl tar tr zstd; do
   command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
@@ -43,6 +45,7 @@ started_at="$(date +%s)"
 sync_tmp_root="${BGP_API_SYNC_TMPDIR:-${TMPDIR:-/tmp}}"
 work_dir="$(mktemp -d "$sync_tmp_root/bgp-api-sync.XXXXXX")"
 trap 'rm -rf -- "$work_dir"' EXIT
+active_caches_released=false
 
 github_api() {
   local -a headers=(-H 'Accept: application/vnd.github+json')
@@ -81,6 +84,69 @@ env_value() {
 }
 
 service_active() { systemctl is-active --quiet "$1"; }
+
+memory_available_mib() {
+  awk '/^MemAvailable:/ { printf "%d\n", $2 / 1024; exit }' /proc/meminfo
+}
+
+service_main_pid() {
+  local service="$1" pid
+  pid="$(systemctl show --property MainPID --value "$service")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$pid"
+}
+
+process_rss_mib() {
+  local pid="$1"
+  awk '/^VmRSS:/ { printf "%d\n", $2 / 1024; exit }' "/proc/$pid/status" 2>/dev/null
+}
+
+runtime_cache_control_supported() {
+  local service="$1" pid
+  pid="$(service_main_pid "$service")" || return 1
+  [ -r "/proc/$pid/environ" ] || return 1
+  tr '\0' '\n' < "/proc/$pid/environ" | grep -Fxq 'BGP_API_RUNTIME_CACHE_CONTROL=1'
+}
+
+release_active_caches_before_stage() {
+  local service="$1" available_before available_after pid rss_before rss_after attempt
+  available_before="$(memory_available_mib)"
+  if [ "$available_before" -ge "$STAGE_MEMORY_RESERVE_MIB" ]; then
+    pid="$(service_main_pid "$service" 2>/dev/null || true)"
+    rss_before="${pid:+$(process_rss_mib "$pid" 2>/dev/null || true)}"
+    say "memory before staging: available=${available_before} MiB active_rss=${rss_before:-unknown} MiB; retaining active runtime caches"
+    return
+  fi
+  if ! runtime_cache_control_supported "$service"; then
+    say "memory before staging: available=${available_before} MiB is below ${STAGE_MEMORY_RESERVE_MIB} MiB, but $service does not support runtime cache release; staging without it"
+    return
+  fi
+  pid="$(service_main_pid "$service")"
+  rss_before="$(process_rss_mib "$pid" 2>/dev/null || true)"
+  say "memory before staging: available=${available_before} MiB active_rss=${rss_before:-unknown} MiB; asking $service to release runtime caches"
+  if ! systemctl kill --signal=USR2 "$service"; then
+    say "could not signal $service to release runtime caches; staging without it"
+    return
+  fi
+  active_caches_released=true
+  for ((attempt = 0; attempt < 10; attempt++)); do
+    sleep 1
+    available_after="$(memory_available_mib)"
+    [ "$available_after" -ge "$STAGE_MEMORY_RESERVE_MIB" ] && break
+  done
+  rss_after="$(process_rss_mib "$pid" 2>/dev/null || true)"
+  say "memory after cache release: available=${available_after:-unknown} MiB active_rss=${rss_after:-unknown} MiB"
+}
+
+restore_active_caches_after_failed_stage() {
+  local service="$1"
+  [ "$active_caches_released" = true ] || return
+  say "restoring runtime caches in $service after the staged update did not activate"
+  if ! systemctl kill --signal=USR1 "$service"; then
+    say "could not signal $service to restore runtime caches"
+  fi
+  active_caches_released=false
+}
 
 stop_service() {
   systemctl stop "$1" >/dev/null 2>&1 || true
@@ -405,13 +471,21 @@ if [ "$blue_green" = true ]; then
   mv "$new_database" "$target_database"
   chown bgpapi:bgpapi "$target_database"
   chmod 0440 "$target_database"
+  # A compatible old slot can shed optional heap caches when memory is tight.
+  # The current bbolt mmap stays valid, so it continues serving correct
+  # responses until Caddy moves traffic to the staged slot.
+  release_active_caches_before_stage "$active_service"
   # A full page-cache warm or selector preload must not run in both API slots
   # at once. systemd reads this file before exec, so restoring it after start
   # affects the next process only; SIGUSR1 starts the active slot's warmup.
   deferred_cache_warmup_before="$(env_value BGP_API_DEFER_CACHE_WARMUP "$target_env_file")"
+  # Persist capability state for the slot that will become active. The next
+  # update can safely request SIGUSR2 only after it sees this process flag.
+  set_env_value BGP_API_RUNTIME_CACHE_CONTROL 1 "$target_env_file"
   set_env_value BGP_API_DEFER_CACHE_WARMUP 1 "$target_env_file"
   if ! systemctl start "$target_service"; then
     set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
+    restore_active_caches_after_failed_stage "$active_service"
     die "$target_service could not start"
   fi
   set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
@@ -419,12 +493,17 @@ if [ "$blue_green" = true ]; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"
+      restore_active_caches_after_failed_stage "$active_service"
       die "$target_service did not stop after a failed health check"
     fi
     rm -f -- "$target_database"
     restore_binary "$binary_backup"
+    restore_active_caches_after_failed_stage "$active_service"
     die "$target_service did not become healthy; active slot was left unchanged"
   fi
+  staged_pid="$(service_main_pid "$target_service" 2>/dev/null || true)"
+  staged_rss="${staged_pid:+$(process_rss_mib "$staged_pid" 2>/dev/null || true)}"
+  say "memory with both slots running: available=$(memory_available_mib) MiB staged_rss=${staged_rss:-unknown} MiB"
   systemctl enable "$target_service" >/dev/null
 
   say "switching Caddy traffic to $target_service on 127.0.0.1:$target_port"
@@ -432,11 +511,13 @@ if [ "$blue_green" = true ]; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"
+      restore_active_caches_after_failed_stage "$active_service"
       die "$target_service did not stop after Caddy rejected the new upstream"
     fi
     systemctl disable "$target_service" >/dev/null 2>&1 || true
     rm -f -- "$target_database"
     restore_binary "$binary_backup"
+    restore_active_caches_after_failed_stage "$active_service"
     die "Caddy rejected the new upstream; active slot was left unchanged"
   fi
   if ! write_active_slot "$target_slot"; then
@@ -446,11 +527,13 @@ if [ "$blue_green" = true ]; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"
+      restore_active_caches_after_failed_stage "$active_service"
       die "$target_service did not stop after the slot marker failed"
     fi
     systemctl disable "$target_service" >/dev/null 2>&1 || true
     rm -f -- "$target_database"
     restore_binary "$binary_backup"
+    restore_active_caches_after_failed_stage "$active_service"
     die "could not persist the active slot; active slot was left unchanged"
   fi
 
@@ -458,17 +541,21 @@ if [ "$blue_green" = true ]; then
   stop_service "$active_service"
   if ! wait_stopped "$active_service"; then
     if ! switch_caddy "$(port_for_slot "$active_slot")"; then
+      say "the new slot remains serving; warming its runtime caches"
+      systemctl kill --signal=USR1 "$target_service" || true
       die "$active_service did not drain and Caddy could not restore the old upstream; the new slot remains serving"
     fi
     write_active_slot "$active_slot" || true
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"
+      restore_active_caches_after_failed_stage "$active_service"
       die "$target_service did not stop after the drain failure"
     fi
     systemctl disable "$target_service" >/dev/null 2>&1 || true
     rm -f -- "$target_database"
     restore_binary "$binary_backup"
+    restore_active_caches_after_failed_stage "$active_service"
     die "$active_service did not drain within 30 seconds; active slot was left unchanged"
   fi
   rm -f -- "$active_database"

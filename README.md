@@ -80,6 +80,15 @@ This keeps planned dataset updates available without rebuilding indexes on the s
 If Caddy is unavailable, disk space is insufficient, or `BGP_API_BLUE_GREEN=0` is set,
 the updater falls back to stop-and-replace mode.
 
+Before staging, the updater records `MemAvailable` and the active process RSS. If
+available memory is below its reserve, a compatible active slot receives `SIGUSR2`:
+it drops only its optional selector and serialized-response caches, while continuing
+to answer from bbolt. This creates room for the staged process without a traffic
+cutover. The new slot always starts cold, traffic switches after its health check,
+then it receives `SIGUSR1` to warm its chosen cache strategy. The old process is
+stopped before the new slot loads selectors. Kernel page cache is left to Linux to
+reclaim; the updater never uses global `drop_caches`.
+
 ### Logs and scheduled updates
 
 ```sh
@@ -180,6 +189,8 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `BGP_API_STARTUP_TIMEOUT_SECONDS` | `300` | Maximum wait for a staged API slot to become healthy |
 | `BGP_API_CACHE_STRATEGY` | `auto` | `auto`, `minimal`, `balanced`, or `full` |
 | `BGP_API_DEFER_CACHE_WARMUP` | `0` | Start serving before cache warmup; the updater uses this internally |
+| `BGP_API_RUNTIME_CACHE_CONTROL` | `1` | Enable `SIGUSR2` release of optional in-process caches for a memory-constrained staged update |
+| `BGP_API_STAGE_MEMORY_RESERVE_MIB` | `768` | Minimum `MemAvailable` before the updater asks the active slot to release optional caches |
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
 | `BGP_API_COMPACT_CACHE_MIB` | strategy default | Override the in-process cache budget for default IP responses |

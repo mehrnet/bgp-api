@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mehrnet/bgp-api/internal/boltstore"
@@ -19,9 +21,24 @@ import (
 )
 
 type BboltRepository struct {
-	db           *bbolt.DB
-	metadata     *DatasetMetadata
-	overlapSlots chan struct{}
+	db                *bbolt.DB
+	metadata          *DatasetMetadata
+	overlapSlots      chan struct{}
+	selectorPreload   atomic.Pointer[compactSelectors]
+	selectorPreloadMu sync.Mutex
+}
+
+// CompactSelectorPreload describes the immutable selector data copied out of
+// bbolt for the compact /v1/ip path.
+type CompactSelectorPreload struct {
+	Bytes int64
+}
+
+type compactSelectors struct {
+	allocations [2][]byte
+	routes      [2][]byte
+	geofeeds    [2][]byte
+	bytes       int64
 }
 
 var errBboltQueryTooBroad = errors.New("bbolt overlap scan limit exceeded")
@@ -71,6 +88,56 @@ func NewBboltRepository(path string) (*BboltRepository, error) {
 
 func (repository *BboltRepository) Close() error { return repository.db.Close() }
 
+// PreloadCompactSelectors copies the six immutable IPv4/IPv6 selector values
+// into the Go heap. It is intended to run once before the HTTP server accepts
+// traffic so compact IP lookups do not fault the large selector values from
+// the bbolt mmap on their first access.
+func (repository *BboltRepository) PreloadCompactSelectors() (CompactSelectorPreload, error) {
+	if selectors := repository.selectorPreload.Load(); selectors != nil {
+		return CompactSelectorPreload{Bytes: selectors.bytes}, nil
+	}
+
+	repository.selectorPreloadMu.Lock()
+	defer repository.selectorPreloadMu.Unlock()
+	if selectors := repository.selectorPreload.Load(); selectors != nil {
+		return CompactSelectorPreload{Bytes: selectors.bytes}, nil
+	}
+
+	selectors := &compactSelectors{}
+	err := repository.db.View(func(transaction *bbolt.Tx) error {
+		for _, entry := range []struct {
+			bucket []byte
+			key    func(uint8) []byte
+			output *[2][]byte
+		}{
+			{bucket: boltstore.BucketAllocationLPM, key: boltstore.SelectionLPMKey, output: &selectors.allocations},
+			{bucket: boltstore.BucketRouteLPM, key: boltstore.RouteLPMKey, output: &selectors.routes},
+			{bucket: boltstore.BucketGeofeedLPM, key: boltstore.SelectionLPMKey, output: &selectors.geofeeds},
+		} {
+			bucket := transaction.Bucket(entry.bucket)
+			if bucket == nil {
+				return fmt.Errorf("bbolt selector bucket %q is missing", entry.bucket)
+			}
+			for index, version := range []uint8{4, 6} {
+				value := bucket.Get(entry.key(version))
+				if len(value) == 0 {
+					return fmt.Errorf("bbolt selector %q for IPv%d is missing", entry.bucket, version)
+				}
+				copyValue := make([]byte, len(value))
+				copy(copyValue, value)
+				entry.output[index] = copyValue
+				selectors.bytes += int64(len(copyValue))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return CompactSelectorPreload{}, err
+	}
+	repository.selectorPreload.Store(selectors)
+	return CompactSelectorPreload{Bytes: selectors.bytes}, nil
+}
+
 func (repository *BboltRepository) DatasetMetadata(context.Context) (*DatasetMetadata, error) {
 	if repository.metadata == nil {
 		return nil, nil
@@ -90,11 +157,21 @@ func (repository *BboltRepository) Lookup(ctx context.Context, ip ipkey.RuntimeI
 // as details=full, but reads only the fields represented in LookupResponse.
 func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.RuntimeIP) (*LookupResponse, error) {
 	address := ip.Address
+	selectorIndex := 0
+	if ip.Version == 6 {
+		selectorIndex = 1
+	}
+	selectors := repository.selectorPreload.Load()
 	var allocation *boltstore.Allocation
 	var routes []boltstore.Route
 	var geofeed *boltstore.Geofeed
 	err := repository.db.View(func(tx *bbolt.Tx) error {
-		allocationLPM := tx.Bucket(boltstore.BucketAllocationLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
+		var allocationLPM []byte
+		if selectors != nil {
+			allocationLPM = selectors.allocations[selectorIndex]
+		} else {
+			allocationLPM = tx.Bucket(boltstore.BucketAllocationLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
+		}
 		allocationID, err := boltstore.LookupSelectionLPM(allocationLPM, address)
 		if err != nil {
 			return err
@@ -106,7 +183,12 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 			}
 			allocation = &record
 		}
-		routeLPM := tx.Bucket(boltstore.BucketRouteLPM).Get(boltstore.RouteLPMKey(uint8(ip.Version)))
+		var routeLPM []byte
+		if selectors != nil {
+			routeLPM = selectors.routes[selectorIndex]
+		} else {
+			routeLPM = tx.Bucket(boltstore.BucketRouteLPM).Get(boltstore.RouteLPMKey(uint8(ip.Version)))
+		}
 		routeIDs, err := boltstore.LookupRouteLPM(routeLPM, address)
 		if err != nil {
 			return err
@@ -124,7 +206,12 @@ func (repository *BboltRepository) lookupCompact(ctx context.Context, ip ipkey.R
 			}
 			routes[index] = record
 		}
-		geofeedLPM := tx.Bucket(boltstore.BucketGeofeedLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
+		var geofeedLPM []byte
+		if selectors != nil {
+			geofeedLPM = selectors.geofeeds[selectorIndex]
+		} else {
+			geofeedLPM = tx.Bucket(boltstore.BucketGeofeedLPM).Get(boltstore.SelectionLPMKey(uint8(ip.Version)))
+		}
 		geofeedID, err := boltstore.LookupSelectionLPM(geofeedLPM, address)
 		if err != nil {
 			return err

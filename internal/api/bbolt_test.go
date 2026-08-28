@@ -106,6 +106,52 @@ func TestBboltRepositorySupportsCompleteAPIContract(t *testing.T) {
 	}
 }
 
+func TestBboltRepositoryPreloadsCompactSelectors(t *testing.T) {
+	repository := testBboltRepository(t)
+	ctx := context.Background()
+	ip, _ := ipkey.ParseRuntime("1.1.1.1")
+
+	before, err := repository.Lookup(ctx, ip, LookupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := repository.PreloadCompactSelectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Bytes <= 0 {
+		t.Fatalf("preloaded bytes = %d", first.Bytes)
+	}
+	selectors := repository.selectorPreload.Load()
+	if selectors == nil {
+		t.Fatal("selector preload was not retained")
+	}
+	for _, selector := range [][]byte{
+		selectors.allocations[0], selectors.allocations[1],
+		selectors.routes[0], selectors.routes[1],
+		selectors.geofeeds[0], selectors.geofeeds[1],
+	} {
+		if len(selector) == 0 {
+			t.Fatal("preloaded selector is empty")
+		}
+	}
+
+	second, err := repository.PreloadCompactSelectors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Bytes != first.Bytes {
+		t.Fatalf("idempotent preload bytes = %d, want %d", second.Bytes, first.Bytes)
+	}
+	after, err := repository.Lookup(ctx, ip, LookupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("preloaded lookup changed response:\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
 func TestBboltRangePaginationUsesProducerRangeIndex(t *testing.T) {
 	repository := testBboltRepository(t)
 	ctx := context.Background()

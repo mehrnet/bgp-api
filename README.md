@@ -181,12 +181,17 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
 | `BGP_API_COMPACT_CACHE_MIB` | `256` | In-process cache budget for default IP responses |
 | `BGP_API_RESOURCE_CACHE_MIB` | `64` | In-process cache budget for prefix, range, and ASN responses |
+| `BGP_API_PRELOAD_COMPACT_SELECTORS` | `0` | Copy the compact IPv4/IPv6 selector indexes into Go memory during startup |
 | `GOMAXPROCS` | Go default | CPU limit |
 | `GOMEMLIMIT` | Go default | Soft Go heap limit |
 
-The installer uses `GOMAXPROCS=2`, `GOMEMLIMIT=384MiB`, a `256 MiB` IP-response cache,
-and a `64 MiB` resource-response cache by default. bbolt maps the database read-only, so
-the operating system can reclaim database pages when needed.
+On hosts with at least 2 GiB of RAM, the installer enables compact-selector preload and
+uses `GOMEMLIMIT=1024MiB`. The preload copies approximately 508 MiB of immutable
+allocation, route, and geofeed selector data into the Go heap, avoiding bbolt mmap page
+faults on first-seen default IP lookups. On smaller hosts it remains disabled and the
+installer uses `GOMEMLIMIT=384MiB`. Both profiles use `GOMAXPROCS=2`, a `256 MiB`
+IP-response cache, and a `64 MiB` resource-response cache. bbolt maps the remainder of
+the database read-only, so the operating system can reclaim those pages when needed.
 
 ## Releases and datasets
 

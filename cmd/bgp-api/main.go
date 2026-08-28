@@ -47,6 +47,14 @@ func main() {
 		log.Printf("validated bbolt dataset %s", releaseTag)
 		return
 	}
+	if environmentBool("BGP_API_PRELOAD_COMPACT_SELECTORS", false) {
+		started := time.Now()
+		preload, err := store.PreloadCompactSelectors()
+		if err != nil {
+			log.Fatalf("preload compact selectors: %v", err)
+		}
+		log.Printf("preloaded %.1f MiB of compact IP selectors in %s", float64(preload.Bytes)/(1<<20), time.Since(started).Round(time.Millisecond))
+	}
 
 	config := api.Config{
 		AllowedOrigins:  allowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS_JSON")),
@@ -105,6 +113,22 @@ func environmentInt(name string, fallback int) int {
 		log.Fatalf("%s must be a positive integer", name)
 	}
 	return parsed
+}
+
+func environmentBool(name string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		log.Fatalf("%s must be a boolean", name)
+		return false
+	}
 }
 
 func allowedOrigins(value string) map[string]struct{} {

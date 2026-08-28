@@ -288,12 +288,22 @@ if [ "$DOMAIN_SET" = true ]; then
     origin_token="$(openssl rand -hex 32)"
   fi
 fi
+preload_compact_selectors=0
+go_memory_limit=384MiB
+# The selector preload retains roughly 508 MiB in the Go heap. Enable it on
+# two-gibibyte-and-larger hosts, while preserving the small-host default.
+memory_kib="$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo)"
+if [ -n "$memory_kib" ] && [ "$memory_kib" -ge 1800000 ]; then
+  preload_compact_selectors=1
+  go_memory_limit=1024MiB
+fi
 cat > "$ENV_FILE" <<EOF
 BGP_API_DATABASE_PATH=$DATA_DIR/primary.bbolt
 BGP_API_PRIMARY_DATABASE_PATH=$DATA_DIR/primary.bbolt
 LISTEN_ADDR=127.0.0.1:3102
 GOMAXPROCS=2
-GOMEMLIMIT=384MiB
+GOMEMLIMIT=$go_memory_limit
+BGP_API_PRELOAD_COMPACT_SELECTORS=$preload_compact_selectors
 BGP_API_COMPACT_CACHE_MIB=256
 BGP_API_RESOURCE_CACHE_MIB=64
 ORIGIN_AUTH_TOKEN=$origin_token
@@ -306,7 +316,8 @@ BGP_API_DATABASE_PATH=$DATA_DIR/secondary.bbolt
 BGP_API_SECONDARY_DATABASE_PATH=$DATA_DIR/secondary.bbolt
 LISTEN_ADDR=127.0.0.1:3103
 GOMAXPROCS=2
-GOMEMLIMIT=384MiB
+GOMEMLIMIT=$go_memory_limit
+BGP_API_PRELOAD_COMPACT_SELECTORS=$preload_compact_selectors
 BGP_API_COMPACT_CACHE_MIB=256
 BGP_API_RESOURCE_CACHE_MIB=64
 ORIGIN_AUTH_TOKEN=$origin_token

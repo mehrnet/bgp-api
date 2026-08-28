@@ -168,6 +168,7 @@ configure_caddy() {
     printf 'BGP_API_DOMAIN=%s\n' "$DOMAIN"
     printf 'ORIGIN_AUTH_TOKEN=%s\n' "$token"
     printf 'BGP_API_UPSTREAM=127.0.0.1:3102\n'
+    printf 'BGP_API_FALLBACK_UPSTREAM=127.0.0.1:3103\n'
   } > "$CADDY_ENV_FILE"
   chmod 0640 "$CADDY_ENV_FILE"
   if getent group caddy >/dev/null 2>&1; then chown root:caddy "$CADDY_ENV_FILE"; fi
@@ -307,6 +308,7 @@ GOMAXPROCS=2
 GOMEMLIMIT=$go_memory_limit
 BGP_API_CACHE_STRATEGY=auto
 BGP_API_DEFER_CACHE_WARMUP=0
+BGP_API_BLOCK_UNTIL_CACHE_WARMUP=0
 BGP_API_RUNTIME_CACHE_CONTROL=1
 ORIGIN_AUTH_TOKEN=$origin_token
 CORS_ALLOWED_ORIGINS_JSON='["https://bgp.mehrnet.com"]'
@@ -321,6 +323,7 @@ GOMAXPROCS=2
 GOMEMLIMIT=$go_memory_limit
 BGP_API_CACHE_STRATEGY=auto
 BGP_API_DEFER_CACHE_WARMUP=0
+BGP_API_BLOCK_UNTIL_CACHE_WARMUP=0
 BGP_API_RUNTIME_CACHE_CONTROL=1
 ORIGIN_AUTH_TOKEN=$origin_token
 CORS_ALLOWED_ORIGINS_JSON='["https://bgp.mehrnet.com"]'

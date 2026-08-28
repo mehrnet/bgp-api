@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -76,8 +77,12 @@ func main() {
 		log.Fatalf("select cache strategy: full cache strategy needs at least %.1f GiB after configured response-cache budgets; this host has %.1f GiB", float64(fullCacheRequirement(cachePlan))/float64(gibibyte), float64(memoryTotal)/float64(gibibyte))
 	}
 	deferCacheWarmup := environmentBool("BGP_API_DEFER_CACHE_WARMUP", false)
+	blockCacheWarmup := environmentBool("BGP_API_BLOCK_UNTIL_CACHE_WARMUP", false)
 	runtimeCacheControl := environmentBool("BGP_API_RUNTIME_CACHE_CONTROL", false)
-	log.Printf("cache strategy requested=%s effective=%s memory=%.1f GiB database=%.1f GiB selectors=%.1f MiB compact_cache=%d MiB resource_cache=%d MiB deferred=%t runtime_cache_control=%t", cachePlan.Requested, cachePlan.Effective, float64(memoryTotal)/float64(gibibyte), float64(databaseBytes)/float64(gibibyte), float64(selectorBytes)/float64(mebibyte), cachePlan.CompactCacheMiB, cachePlan.ResourceCacheMiB, deferCacheWarmup, runtimeCacheControl)
+	if deferCacheWarmup && blockCacheWarmup {
+		log.Fatal("BGP_API_DEFER_CACHE_WARMUP and BGP_API_BLOCK_UNTIL_CACHE_WARMUP cannot both be enabled")
+	}
+	log.Printf("cache strategy requested=%s effective=%s memory=%.1f GiB database=%.1f GiB selectors=%.1f MiB compact_cache=%d MiB resource_cache=%d MiB deferred=%t blocking=%t runtime_cache_control=%t", cachePlan.Requested, cachePlan.Effective, float64(memoryTotal)/float64(gibibyte), float64(databaseBytes)/float64(gibibyte), float64(selectorBytes)/float64(mebibyte), cachePlan.CompactCacheMiB, cachePlan.ResourceCacheMiB, deferCacheWarmup, blockCacheWarmup, runtimeCacheControl)
 
 	config := api.Config{
 		AllowedOrigins:  allowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS_JSON")),
@@ -100,6 +105,13 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	if blockCacheWarmup {
+		log.Printf("warming runtime caches before accepting traffic")
+		if err := warmer.Warm(); err != nil {
+			log.Fatalf("warm runtime caches before listening: %v", err)
+		}
+	}
+
 	go func() {
 		log.Printf("bgp-api listening on %s", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -108,7 +120,7 @@ func main() {
 	}()
 	if deferCacheWarmup {
 		log.Printf("cache warmup deferred until SIGUSR1")
-	} else {
+	} else if !blockCacheWarmup {
 		warmer.Start()
 	}
 
@@ -156,37 +168,62 @@ type runtimeCacheWarmer struct {
 }
 
 func (warmer *runtimeCacheWarmer) Start() {
+	if !warmer.begin() {
+		return
+	}
+	go func() {
+		defer warmer.finish()
+		if err := warmer.warm(); err != nil {
+			log.Printf("warm runtime caches: %v", err)
+		}
+	}()
+}
+
+// Warm finishes the configured cache warmup before returning. Update staging
+// uses it before the proxy changes upstream, keeping live requests on the old
+// slot while the replacement pays the one-time copy cost.
+func (warmer *runtimeCacheWarmer) Warm() error {
+	if !warmer.begin() {
+		return errors.New("runtime cache warmup is already in progress")
+	}
+	defer warmer.finish()
+	return warmer.warm()
+}
+
+func (warmer *runtimeCacheWarmer) begin() bool {
 	warmer.mu.Lock()
 	if warmer.running {
 		warmer.mu.Unlock()
-		return
+		return false
 	}
 	warmer.running = true
 	warmer.mu.Unlock()
-	go func() {
-		defer func() {
-			warmer.mu.Lock()
-			warmer.running = false
-			warmer.mu.Unlock()
-		}()
-		if warmer.plan.PreloadSelectors {
-			if err := preloadCompactSelectors(warmer.store); err != nil {
-				log.Printf("preload compact selectors: %v", err)
-				return
-			}
+	return true
+}
+
+func (warmer *runtimeCacheWarmer) finish() {
+	warmer.mu.Lock()
+	warmer.running = false
+	warmer.mu.Unlock()
+}
+
+func (warmer *runtimeCacheWarmer) warm() error {
+	if warmer.plan.PreloadSelectors {
+		if err := preloadCompactSelectors(warmer.store); err != nil {
+			return err
 		}
-		if warmer.plan.WarmDatasetPageCache {
-			log.Printf("warming %.1f GiB bbolt dataset through the kernel page cache", float64(warmer.plan.DatabaseBytes)/float64(gibibyte))
-			warmup, err := warmer.store.WarmDataset(context.Background())
-			if err != nil {
-				log.Printf("warm bbolt dataset: %v", err)
-				return
-			}
-			if !warmup.AlreadyWarm {
-				log.Printf("warmed %.1f GiB bbolt dataset through the kernel page cache", float64(warmup.Bytes)/float64(gibibyte))
-			}
+	}
+	if warmer.plan.WarmDatasetPageCache {
+		log.Printf("warming %.1f GiB bbolt dataset through the kernel page cache", float64(warmer.plan.DatabaseBytes)/float64(gibibyte))
+		warmup, err := warmer.store.WarmDataset(context.Background())
+		if err != nil {
+			return err
 		}
-	}()
+		if !warmup.AlreadyWarm {
+			log.Printf("warmed %.1f GiB bbolt dataset through the kernel page cache", float64(warmup.Bytes)/float64(gibibyte))
+		}
+	}
+	return nil
 }
 
 func preloadCompactSelectors(store *api.BboltRepository) error {

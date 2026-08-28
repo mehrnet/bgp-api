@@ -72,9 +72,10 @@ Updates use the inactive slot when Caddy is configured:
 
 1. Download and verify the release.
 2. Validate the database and binary.
-3. Start the inactive slot and check its health.
-4. Caddy retries/fails over to the healthy staged slot without a reload.
-5. Keep the old slot available for a short drain grace period, then stop it and remove its database.
+3. Release optional caches in the active slot if memory is constrained.
+4. Fully warm the inactive slot before it opens its listener, then check its health.
+5. Atomically move Caddy to the warmed slot, retaining the old slot as a retry target during its drain grace period.
+6. Stop the old slot and remove its database.
 
 This keeps planned dataset updates available without rebuilding indexes on the server.
 If Caddy is unavailable, disk space is insufficient, or `BGP_API_BLUE_GREEN=0` is set,
@@ -85,10 +86,11 @@ available memory is below its reserve, it first verifies the active slot's authe
 health capability and then sends a compatible process `SIGUSR2`:
 it drops only its optional selector and serialized-response caches, while continuing
 to answer from bbolt. This creates room for the staged process without a traffic
-cutover. The new slot always starts cold, traffic switches after its health check,
-then it receives `SIGUSR1` to warm its chosen cache strategy. The old process is
-stopped before the new slot loads selectors. Kernel page cache is left to Linux to
-reclaim; the updater never uses global `drop_caches`.
+cutover. The replacement then completes its selected cache warmup before it accepts
+traffic, while the old process continues to answer. Only after that health check does
+Caddy move to the new slot; the prior slot remains a retry target through the drain
+period. Kernel page cache is left to Linux to reclaim; the updater never uses global
+`drop_caches`.
 
 Release downloads and archive extraction run at idle I/O priority and `nice 19`.
 This keeps the active read-only API ahead of the multi-gigabyte staging work on
@@ -194,6 +196,7 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `BGP_API_STARTUP_TIMEOUT_SECONDS` | `300` | Maximum wait for a staged API slot to become healthy |
 | `BGP_API_CACHE_STRATEGY` | `auto` | `auto`, `minimal`, `balanced`, or `full` |
 | `BGP_API_DEFER_CACHE_WARMUP` | `0` | Start serving before cache warmup; the updater uses this internally |
+| `BGP_API_BLOCK_UNTIL_CACHE_WARMUP` | `0` | Finish the selected warmup before opening the listener; the updater uses this for the staged slot |
 | `BGP_API_RUNTIME_CACHE_CONTROL` | `1` | Enable `SIGUSR2` release of optional in-process caches for a memory-constrained staged update |
 | `BGP_API_STAGE_MEMORY_RESERVE_MIB` | `768` | Minimum `MemAvailable` before the updater asks the active slot to release optional caches |
 | `BGP_API_DRAIN_GRACE_SECONDS` | `45` | Keep the old backend running after the Caddy switch so stale proxy connections can finish |
@@ -218,13 +221,10 @@ roughly `3.6 GiB` dataset, a 4 GiB host does **not** qualify; `auto` selects `ba
 there. A 5 GiB-or-larger host can usually use `full`, while bbolt still lets Linux reclaim
 pages under pressure.
 
-The active server starts accepting traffic before its selected cache begins warming. In a
-blue-green update the staged slot explicitly defers warmup. Caddy is configured with both
-loopback slots and retries a healthy peer without a configuration reload, so existing
-HTTP/2 and Cloudflare origin connections remain valid while the old slot drains. The updater
-then sends `SIGUSR1` to warm the new active slot in the background. Its in-process response
-caches start empty by design, so update traffic remains available while the new selector or
-page cache reaches its hot state.
+On ordinary startup the active server begins serving before its selected cache warms. During a
+blue-green update, however, the staged slot warms before its listener opens, while the current
+slot remains live. Caddy makes the warmed slot primary and retains the old slot as a retry target
+for the drain period. This avoids exposing the one-time selector copy to public requests.
 
 ## Releases and datasets
 

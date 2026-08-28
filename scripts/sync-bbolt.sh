@@ -298,76 +298,52 @@ caddy_configured() {
 }
 
 caddy_proxy_configured() {
-  grep -Fq 'BGP_API_UPSTREAM' "$CADDY_MANAGED_CONFIG" ||
-    grep -Fq '127.0.0.1:3102 127.0.0.1:3103' "$CADDY_MANAGED_CONFIG"
+  grep -Fq 'BGP_API_UPSTREAM' "$CADDY_MANAGED_CONFIG"
 }
 
-static_failover_proxy_configured() {
-  grep -Fq '127.0.0.1:3102 127.0.0.1:3103' "$CADDY_MANAGED_CONFIG"
-}
-
-set_caddy_upstream() {
-  local upstream="$1" temporary owner group mode
+set_caddy_upstreams() {
+  local upstream="$1" fallback="$2" temporary owner group mode
   owner="$(stat -c '%u' "$CADDY_ENV_FILE")"
   group="$(stat -c '%g' "$CADDY_ENV_FILE")"
   mode="$(stat -c '%a' "$CADDY_ENV_FILE")"
   temporary="$(mktemp "${CADDY_ENV_FILE}.tmp.XXXXXX")"
-  if grep -q '^BGP_API_UPSTREAM=' "$CADDY_ENV_FILE"; then
-    sed "s|^BGP_API_UPSTREAM=.*|BGP_API_UPSTREAM=$upstream|" "$CADDY_ENV_FILE" > "$temporary"
-  else
-    cat "$CADDY_ENV_FILE" > "$temporary"
-    printf 'BGP_API_UPSTREAM=%s\n' "$upstream" >> "$temporary"
-  fi
+  sed '/^BGP_API_UPSTREAM=/d; /^BGP_API_FALLBACK_UPSTREAM=/d' "$CADDY_ENV_FILE" > "$temporary"
+  printf 'BGP_API_UPSTREAM=%s\n' "$upstream" >> "$temporary"
+  printf 'BGP_API_FALLBACK_UPSTREAM=%s\n' "$fallback" >> "$temporary"
   chown "$owner:$group" "$temporary"
   chmod "$mode" "$temporary"
   mv -f "$temporary" "$CADDY_ENV_FILE"
 }
 
-restore_caddy_upstream() {
-  local upstream="$1"
-  if [ -n "$upstream" ]; then
-    set_caddy_upstream "$upstream"
-  else
-    local temporary owner group mode
-    owner="$(stat -c '%u' "$CADDY_ENV_FILE")"
-    group="$(stat -c '%g' "$CADDY_ENV_FILE")"
-    mode="$(stat -c '%a' "$CADDY_ENV_FILE")"
-    temporary="$(mktemp "${CADDY_ENV_FILE}.tmp.XXXXXX")"
-    sed '/^BGP_API_UPSTREAM=/d' "$CADDY_ENV_FILE" > "$temporary"
-    chown "$owner:$group" "$temporary"
-    chmod "$mode" "$temporary"
-    mv -f "$temporary" "$CADDY_ENV_FILE"
-  fi
+restore_caddy_upstreams() {
+  local upstream="$1" fallback="$2"
+  set_caddy_upstreams "${upstream:-127.0.0.1:3102}" "${fallback:-127.0.0.1:3103}"
 }
 
 reload_caddy() {
-  local upstream="$1"
+  local upstream="$1" fallback="$2"
   local domain token
   domain="$(env_value BGP_API_DOMAIN "$CADDY_ENV_FILE")"
   token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
   BGP_API_DOMAIN="${domain:-bgp-api.mehrnet.com}" \
     BGP_API_UPSTREAM="$upstream" \
+    BGP_API_FALLBACK_UPSTREAM="$fallback" \
     ORIGIN_AUTH_TOKEN="$token" \
     caddy validate --config "$CADDY_CONFIG" --adapter caddyfile >/dev/null
   BGP_API_DOMAIN="${domain:-bgp-api.mehrnet.com}" \
     BGP_API_UPSTREAM="$upstream" \
+    BGP_API_FALLBACK_UPSTREAM="$fallback" \
     ORIGIN_AUTH_TOKEN="$token" \
     caddy reload --config "$CADDY_CONFIG" --adapter caddyfile >/dev/null
 }
 
 switch_caddy() {
-  local port="$1" previous
-  # Both API slots are permanent upstreams in the current Caddy config.
-  # Passive retry/failover handles the slot transition without a reload, so
-  # existing HTTP/2 and Cloudflare origin connections never retain a route to
-  # a backend that will be removed.
-  if static_failover_proxy_configured; then
-    return 0
-  fi
+  local port="$1" fallback_port="$2" previous previous_fallback
   previous="$(env_value BGP_API_UPSTREAM "$CADDY_ENV_FILE")"
-  set_caddy_upstream "127.0.0.1:$port"
-  if ! reload_caddy "127.0.0.1:$port"; then
-    restore_caddy_upstream "$previous"
+  previous_fallback="$(env_value BGP_API_FALLBACK_UPSTREAM "$CADDY_ENV_FILE")"
+  set_caddy_upstreams "127.0.0.1:$port" "127.0.0.1:$fallback_port"
+  if ! reload_caddy "127.0.0.1:$port" "127.0.0.1:$fallback_port"; then
+    restore_caddy_upstreams "$previous" "$previous_fallback"
     return 1
   fi
 }
@@ -508,20 +484,24 @@ if [ "$blue_green" = true ]; then
   # The current bbolt mmap stays valid, so it continues serving correct
   # responses until Caddy moves traffic to the staged slot.
   release_active_caches_before_stage "$active_service" "$(port_for_slot "$active_slot")"
-  # A full page-cache warm or selector preload must not run in both API slots
-  # at once. systemd reads this file before exec, so restoring it after start
-  # affects the next process only; SIGUSR1 starts the active slot's warmup.
+  # The old slot keeps serving while the replacement completes its expensive
+  # selector copy. systemd reads these values before exec, so restoring them
+  # after start affects only a later process restart.
   deferred_cache_warmup_before="$(env_value BGP_API_DEFER_CACHE_WARMUP "$target_env_file")"
+  block_cache_warmup_before="$(env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP "$target_env_file")"
   # Persist capability state for the slot that will become active. The next
   # update can safely request SIGUSR2 only after it sees this process flag.
   set_env_value BGP_API_RUNTIME_CACHE_CONTROL 1 "$target_env_file"
-  set_env_value BGP_API_DEFER_CACHE_WARMUP 1 "$target_env_file"
+  set_env_value BGP_API_DEFER_CACHE_WARMUP 0 "$target_env_file"
+  set_env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP 1 "$target_env_file"
   if ! systemctl start "$target_service"; then
     set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
+    set_env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP "${block_cache_warmup_before:-0}" "$target_env_file"
     restore_active_caches_after_failed_stage "$active_service"
     die "$target_service could not start"
   fi
   set_env_value BGP_API_DEFER_CACHE_WARMUP "${deferred_cache_warmup_before:-0}" "$target_env_file"
+  set_env_value BGP_API_BLOCK_UNTIL_CACHE_WARMUP "${block_cache_warmup_before:-0}" "$target_env_file"
   if ! health_check "$target_port"; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
@@ -539,8 +519,8 @@ if [ "$blue_green" = true ]; then
   say "memory with both slots running: available=$(memory_available_mib) MiB staged_rss=${staged_rss:-unknown} MiB"
   systemctl enable "$target_service" >/dev/null
 
-  say "switching Caddy traffic to $target_service on 127.0.0.1:$target_port"
-  if ! switch_caddy "$target_port"; then
+  say "switching Caddy traffic to the prewarmed $target_service slot on 127.0.0.1:$target_port"
+  if ! switch_caddy "$target_port" "$(port_for_slot "$active_slot")"; then
     stop_service "$target_service"
     if ! wait_stopped "$target_service"; then
       restore_binary "$binary_backup"
@@ -554,7 +534,7 @@ if [ "$blue_green" = true ]; then
     die "Caddy rejected the new upstream; active slot was left unchanged"
   fi
   if ! write_active_slot "$target_slot"; then
-    if ! switch_caddy "$(port_for_slot "$active_slot")"; then
+    if ! switch_caddy "$(port_for_slot "$active_slot")" "$target_port"; then
       die "could not persist the active slot or restore Caddy; the new slot remains serving"
     fi
     stop_service "$target_service"
@@ -579,9 +559,8 @@ if [ "$blue_green" = true ]; then
   say "draining $active_service before removing its database"
   stop_service "$active_service"
   if ! wait_stopped "$active_service"; then
-    if ! switch_caddy "$(port_for_slot "$active_slot")"; then
-      say "the new slot remains serving; warming its runtime caches"
-      systemctl kill --signal=USR1 "$target_service" || true
+    if ! switch_caddy "$(port_for_slot "$active_slot")" "$target_port"; then
+      say "the new slot remains serving with its warmed runtime caches"
       die "$active_service did not drain and Caddy could not restore the old upstream; the new slot remains serving"
     fi
     write_active_slot "$active_slot" || true
@@ -600,8 +579,7 @@ if [ "$blue_green" = true ]; then
   rm -f -- "$active_database"
   systemctl disable "$active_service" >/dev/null 2>&1 || true
   write_active_slot "$target_slot"
-  say "warming runtime caches in the active $target_service slot"
-  systemctl kill --signal=USR1 "$target_service"
+  say "the active $target_service slot completed cache warmup before traffic moved"
 else
   say "using stop-and-replace activation for release $release_tag"
   stop_service "$SERVICE"
@@ -621,11 +599,11 @@ else
   fi
   if caddy_configured; then
     if service_active caddy; then
-      switch_caddy 3102 || die "Caddy could not switch to the primary API slot"
+      switch_caddy 3102 3103 || die "Caddy could not switch to the primary API slot"
     else
       # Persist the next upstream even when Caddy is currently down. Its
       # systemd environment will use this value on the next start.
-      set_caddy_upstream 127.0.0.1:3102
+      set_caddy_upstreams 127.0.0.1:3102 127.0.0.1:3103
       say "Caddy is inactive; persisted the primary upstream for its next start"
     fi
   fi

@@ -29,6 +29,17 @@ readonly STAGE_MEMORY_RESERVE_MIB="${BGP_API_STAGE_MEMORY_RESERVE_MIB:-768}"
 say() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 die() { say "error: $*" >&2; exit 1; }
 
+# Dataset transfer and extraction are deliberately background-priority work.
+# The active API is latency-sensitive and must retain CPU and block I/O while
+# a multi-gigabyte immutable release is prepared in the inactive slot.
+low_priority() {
+  if command -v ionice >/dev/null 2>&1; then
+    ionice -c3 nice -n 19 "$@"
+    return
+  fi
+  nice -n 19 "$@"
+}
+
 [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STARTUP_TIMEOUT_SECONDS must be a positive integer"
 [[ "$STAGE_MEMORY_RESERVE_MIB" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STAGE_MEMORY_RESERVE_MIB must be a positive integer"
 
@@ -52,7 +63,7 @@ github_api() {
   if [ -n "${BGP_API_GITHUB_TOKEN:-}" ]; then
     headers+=(-H "Authorization: Bearer $BGP_API_GITHUB_TOKEN")
   fi
-  curl --fail --location --silent --show-error --retry 3 \
+  low_priority curl --fail --location --silent --show-error --retry 3 \
     "${headers[@]}" "https://api.github.com$1"
 }
 
@@ -61,7 +72,7 @@ download() {
   if [ -n "${BGP_API_GITHUB_TOKEN:-}" ]; then
     headers+=(-H "Authorization: Bearer $BGP_API_GITHUB_TOKEN")
   fi
-  curl --fail --location --silent --show-error --retry 3 \
+  low_priority curl --fail --location --silent --show-error --retry 3 \
     "${headers[@]}" --output "$2" "$1"
 }
 
@@ -406,8 +417,9 @@ verify_asset "$binary_asset"
 
 say "extracting release $release_tag"
 mkdir "$work_dir/database" "$work_dir/binary"
-zstd --decompress --stdout "$work_dir/$database_asset" | tar -xf - -C "$work_dir/database"
-tar -xzf "$work_dir/$binary_asset" -C "$work_dir/binary"
+low_priority zstd --decompress --stdout "$work_dir/$database_asset" | \
+  low_priority tar -xf - -C "$work_dir/database"
+low_priority tar -xzf "$work_dir/$binary_asset" -C "$work_dir/binary"
 new_database="$work_dir/database/mehrnet_bgp.bbolt"
 new_binary="$work_dir/binary/bgp-api-linux-${arch}"
 [ -s "$new_database" ] || die "database archive did not contain mehrnet_bgp.bbolt"

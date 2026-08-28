@@ -90,6 +90,10 @@ then it receives `SIGUSR1` to warm its chosen cache strategy. The old process is
 stopped before the new slot loads selectors. Kernel page cache is left to Linux to
 reclaim; the updater never uses global `drop_caches`.
 
+Release downloads and archive extraction run at idle I/O priority and `nice 19`.
+This keeps the active read-only API ahead of the multi-gigabyte staging work on
+small hosts.
+
 ### Logs and scheduled updates
 
 ```sh

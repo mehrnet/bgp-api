@@ -93,8 +93,9 @@ period. Kernel page cache is left to Linux to reclaim; the updater never uses gl
 `drop_caches`.
 
 Release downloads and archive extraction run at idle I/O priority and `nice 19`.
-This keeps the active read-only API ahead of the multi-gigabyte staging work on
-small hosts.
+The staged slot also receives the minimum systemd CPU and I/O weight while it
+warms. This keeps the active read-only API ahead of all multi-gigabyte staging
+work on small hosts.
 
 ### Logs and scheduled updates
 

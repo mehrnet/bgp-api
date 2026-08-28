@@ -63,6 +63,7 @@ type Config struct {
 	AllowedOrigins             map[string]struct{}
 	OriginAuthToken            string
 	Build                      BuildInfo
+	RuntimeCacheControl        bool
 	CompactResponseCacheBytes  int
 	ResourceResponseCacheBytes int
 }
@@ -165,6 +166,13 @@ type HealthResponse struct {
 	Database string           `json:"database"`
 	Build    *BuildInfo       `json:"build,omitempty"`
 	Dataset  *DatasetMetadata `json:"dataset,omitempty"`
+	Runtime  *RuntimeInfo     `json:"runtime,omitempty"`
+}
+
+// RuntimeInfo exposes only lifecycle capabilities needed by the authenticated
+// local updater. It is not a measurement or an administrative HTTP surface.
+type RuntimeInfo struct {
+	CacheControl bool `json:"cache_control"`
 }
 
 type errorResponse struct {
@@ -266,6 +274,9 @@ func NewWithRuntime(repository Repository, config Config) (http.Handler, *Runtim
 func health(writer http.ResponseWriter, request *http.Request, repository Repository, config Config) {
 	response := HealthResponse{OK: true, Service: "bgp-api", Version: 1, Database: "bbolt"}
 	response.Build = buildInfo(config.Build)
+	if config.RuntimeCacheControl {
+		response.Runtime = &RuntimeInfo{CacheControl: true}
+	}
 	metadata, err := datasetMetadata(request.Context(), repository)
 	if err != nil {
 		log.Printf("dataset metadata lookup failed: %v", err)

@@ -102,14 +102,17 @@ process_rss_mib() {
 }
 
 runtime_cache_control_supported() {
-  local service="$1" pid
-  pid="$(service_main_pid "$service")" || return 1
-  [ -r "/proc/$pid/environ" ] || return 1
-  tr '\0' '\n' < "/proc/$pid/environ" | grep -Fxq 'BGP_API_RUNTIME_CACHE_CONTROL=1'
+  local service="$1" port="$2" token response
+  service_main_pid "$service" >/dev/null || return 1
+  token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
+  response="$(curl --fail --silent --show-error --max-time 3 \
+    -H "X-BGP-API-Origin-Token: $token" \
+    "http://127.0.0.1:$port/v1/health" 2>/dev/null)" || return 1
+  jq -e '.runtime.cache_control == true' <<<"$response" >/dev/null
 }
 
 release_active_caches_before_stage() {
-  local service="$1" available_before available_after pid rss_before rss_after attempt
+  local service="$1" port="$2" available_before available_after pid rss_before rss_after attempt
   available_before="$(memory_available_mib)"
   if [ "$available_before" -ge "$STAGE_MEMORY_RESERVE_MIB" ]; then
     pid="$(service_main_pid "$service" 2>/dev/null || true)"
@@ -117,7 +120,7 @@ release_active_caches_before_stage() {
     say "memory before staging: available=${available_before} MiB active_rss=${rss_before:-unknown} MiB; retaining active runtime caches"
     return
   fi
-  if ! runtime_cache_control_supported "$service"; then
+  if ! runtime_cache_control_supported "$service" "$port"; then
     say "memory before staging: available=${available_before} MiB is below ${STAGE_MEMORY_RESERVE_MIB} MiB, but $service does not support runtime cache release; staging without it"
     return
   fi
@@ -474,7 +477,7 @@ if [ "$blue_green" = true ]; then
   # A compatible old slot can shed optional heap caches when memory is tight.
   # The current bbolt mmap stays valid, so it continues serving correct
   # responses until Caddy moves traffic to the staged slot.
-  release_active_caches_before_stage "$active_service"
+  release_active_caches_before_stage "$active_service" "$(port_for_slot "$active_slot")"
   # A full page-cache warm or selector preload must not run in both API slots
   # at once. systemd reads this file before exec, so restoring it after start
   # affects the next process only; SIGUSR1 starts the active slot's warmup.

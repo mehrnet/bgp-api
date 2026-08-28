@@ -119,6 +119,16 @@ func TestHealthIncludesDatasetMetadata(t *testing.T) {
 	}
 }
 
+func TestHealthReportsEnabledRuntimeCacheControl(t *testing.T) {
+	handler := New(fakeRepository{}, Config{RuntimeCacheControl: true})
+	request := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"runtime":{"cache_control":true}`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerIgnoresLegacyEnrichmentParameter(t *testing.T) {
 	handler := New(fakeRepository{}, Config{})
 	request := httptest.NewRequest(http.MethodGet, "/v1/ip?query=1.1.1.1&enrich=1", nil)

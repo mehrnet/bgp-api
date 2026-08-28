@@ -81,7 +81,8 @@ If Caddy is unavailable, disk space is insufficient, or `BGP_API_BLUE_GREEN=0` i
 the updater falls back to stop-and-replace mode.
 
 Before staging, the updater records `MemAvailable` and the active process RSS. If
-available memory is below its reserve, a compatible active slot receives `SIGUSR2`:
+available memory is below its reserve, it first verifies the active slot's authenticated
+health capability and then sends a compatible process `SIGUSR2`:
 it drops only its optional selector and serialized-response caches, while continuing
 to answer from bbolt. This creates room for the staged process without a traffic
 cutover. The new slot always starts cold, traffic switches after its health check,

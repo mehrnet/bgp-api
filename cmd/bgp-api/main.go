@@ -87,6 +87,7 @@ func main() {
 			Commit:  stringPointer(commit),
 			BuiltAt: stringPointer(builtAt),
 		},
+		RuntimeCacheControl:        runtimeCacheControl,
 		CompactResponseCacheBytes:  cachePlan.CompactCacheMiB << 20,
 		ResourceResponseCacheBytes: cachePlan.ResourceCacheMiB << 20,
 	}

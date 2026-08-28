@@ -25,6 +25,7 @@ readonly LOCK_FILE="${BGP_API_LOCK_FILE:-/run/lock/mehrnet-bgp-api-sync.lock}"
 readonly BLUE_GREEN_MODE="${BGP_API_BLUE_GREEN:-auto}"
 readonly STARTUP_TIMEOUT_SECONDS="${BGP_API_STARTUP_TIMEOUT_SECONDS:-300}"
 readonly STAGE_MEMORY_RESERVE_MIB="${BGP_API_STAGE_MEMORY_RESERVE_MIB:-768}"
+readonly DRAIN_GRACE_SECONDS="${BGP_API_DRAIN_GRACE_SECONDS:-45}"
 
 say() { printf '%s %s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$*"; }
 die() { say "error: $*" >&2; exit 1; }
@@ -42,6 +43,7 @@ low_priority() {
 
 [[ "$STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STARTUP_TIMEOUT_SECONDS must be a positive integer"
 [[ "$STAGE_MEMORY_RESERVE_MIB" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_STAGE_MEMORY_RESERVE_MIB must be a positive integer"
+[[ "$DRAIN_GRACE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "BGP_API_DRAIN_GRACE_SECONDS must be a positive integer"
 
 for command in awk cat chown cp curl date df flock grep head install jq mktemp mv rm sed sha256sum sleep stat systemctl tar tr zstd; do
   command -v "$command" >/dev/null 2>&1 || die "missing required command: $command"
@@ -552,6 +554,12 @@ if [ "$blue_green" = true ]; then
     die "could not persist the active slot; active slot was left unchanged"
   fi
 
+  # A Caddy reload is atomic for new connections, but existing HTTP/2 and
+  # Cloudflare origin connections may still be handled by the old proxy route
+  # briefly. Keep the old backend alive through that grace period before its
+  # systemd stop closes those in-flight/stale upstream requests.
+  say "allowing $active_service to drain for ${DRAIN_GRACE_SECONDS}s before removal"
+  sleep "$DRAIN_GRACE_SECONDS"
   say "draining $active_service before removing its database"
   stop_service "$active_service"
   if ! wait_stopped "$active_service"; then

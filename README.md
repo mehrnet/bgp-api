@@ -74,7 +74,7 @@ Updates use the inactive slot when Caddy is configured:
 2. Validate the database and binary.
 3. Start the inactive slot and check its health.
 4. Switch Caddy to the new slot.
-5. Drain the old slot and remove its database.
+5. Keep the old slot available for a short proxy drain grace period, then stop it and remove its database.
 
 This keeps planned dataset updates available without rebuilding indexes on the server.
 If Caddy is unavailable, disk space is insufficient, or `BGP_API_BLUE_GREEN=0` is set,
@@ -196,6 +196,7 @@ The installer writes `/etc/bgp-api/bgp-api.env`:
 | `BGP_API_DEFER_CACHE_WARMUP` | `0` | Start serving before cache warmup; the updater uses this internally |
 | `BGP_API_RUNTIME_CACHE_CONTROL` | `1` | Enable `SIGUSR2` release of optional in-process caches for a memory-constrained staged update |
 | `BGP_API_STAGE_MEMORY_RESERVE_MIB` | `768` | Minimum `MemAvailable` before the updater asks the active slot to release optional caches |
+| `BGP_API_DRAIN_GRACE_SECONDS` | `45` | Keep the old backend running after the Caddy switch so stale proxy connections can finish |
 | `CORS_ALLOWED_ORIGINS_JSON` | empty | JSON array of browser origins |
 | `ORIGIN_AUTH_TOKEN` | empty | Proxy-to-origin authentication token |
 | `BGP_API_COMPACT_CACHE_MIB` | strategy default | Override the in-process cache budget for default IP responses |

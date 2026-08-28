@@ -452,7 +452,6 @@ func buildSelectedBboltResponse(ip ipkey.RuntimeIP, allocation *boltstore.Alloca
 		response.Network.AbuseContact = optional(route.AbuseContact)
 	}
 	if allocation != nil {
-		response.Network.Name = optional(allocation.Name)
 		allocationStart := allocation.Start.Addr(int(allocation.Version)).String()
 		allocationEnd := allocation.End.Addr(int(allocation.Version)).String()
 		response.Allocation.StartIP, response.Allocation.EndIP = &allocationStart, &allocationEnd

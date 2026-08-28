@@ -25,7 +25,6 @@ source data are `null`; they are never guessed.
     "asn": "AS13335",
     "asns": ["AS13335"],
     "as_number": 13335,
-    "name": "apnic-labs",
     "status": null,
     "abuse_contact": null
   },
@@ -100,3 +99,5 @@ code.
 `network.asns` retains every origin ASN for a most-specific route. `network.asn`
 and `network.as_number` are populated only when that route has one origin;
 they are `null` for a multi-origin route rather than choosing an arbitrary ASN.
+`network` contains route-registration information only and does not identify an
+ASN owner. RIR `netname` values are returned exclusively as `allocation.name`.

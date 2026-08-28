@@ -84,7 +84,6 @@ type LookupResponse struct {
 		ASN          nullableString `json:"asn"`
 		ASNs         []string       `json:"asns"`
 		ASNumber     *int           `json:"as_number"`
-		Name         nullableString `json:"name"`
 		Status       nullableString `json:"status"`
 		AbuseContact nullableString `json:"abuse_contact"`
 	} `json:"network"`

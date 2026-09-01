@@ -50,6 +50,12 @@ curl -fsSL https://raw.githubusercontent.com/mehrnet/bgp-api/main/install.sh | \
 The installer downloads the matching static API binary and bbolt dataset from the
 latest GitHub release. It verifies both with `SHA256SUMS.txt` before starting the service.
 
+A public installation stores its hostname in a root-only reinstallation record. After
+`--uninstall`, running the normal install command again restores that hostname and its
+Caddy vhost automatically; a fresh origin token is generated when needed. The record
+never contains the token or dataset. Use `--local-only` to intentionally install only
+the loopback service instead.
+
 ## Operations
 
 ### Check status
@@ -131,10 +137,18 @@ CRON_TZ=UTC
 ### Uninstall
 
 The command removes the API services, databases, update schedule, binary, and managed
-Caddy configuration. Shared packages such as Caddy remain installed.
+Caddy configuration. Shared packages such as Caddy remain installed. It retains only
+the prior public hostname, so a normal subsequent install restores the Caddy deployment
+without requiring `--domain` again.
 
 ```sh
 sudo /srv/bgp-api/install.sh --uninstall
+```
+
+To remove that reinstallation record as well, use:
+
+```sh
+sudo /srv/bgp-api/install.sh --uninstall --purge
 ```
 
 If the local installer is unavailable:

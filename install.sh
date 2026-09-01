@@ -7,7 +7,8 @@ readonly SOURCE_REF="${BGP_API_SOURCE_REF:-main}"
 readonly INSTALL_DIR="${BGP_API_INSTALL_DIR:-/srv/bgp-api}"
 readonly DATA_DIR="${BGP_API_DATA_DIR:-/var/lib/bgp-api}"
 readonly CONFIG_DIR="/etc/bgp-api"
-readonly CONFIG_FILE="$INSTALL_DIR/install.conf"
+readonly STATE_DIR="/etc/mehrnet"
+readonly REINSTALL_STATE_FILE="$STATE_DIR/bgp-api-install.conf"
 readonly ENV_FILE="$CONFIG_DIR/bgp-api.env"
 readonly SECONDARY_ENV_FILE="$CONFIG_DIR/bgp-api-secondary.env"
 readonly UPDATE_ENV_FILE="$CONFIG_DIR/update.env"
@@ -25,6 +26,8 @@ ACTION=install
 DOMAIN=""
 DOMAIN_SET=false
 AUTO_UPDATE=false
+LOCAL_ONLY=false
+PURGE=false
 
 if [ -t 1 ]; then
   readonly BOLD=$'\033[1m' CYAN=$'\033[36m' GREEN=$'\033[32m' RESET=$'\033[0m'
@@ -42,15 +45,17 @@ usage() {
 Install, update, or uninstall MehrNet BGP API.
 
 Usage:
-  install.sh [--domain DOMAIN] [--auto-update]
+  install.sh [--domain DOMAIN] [--auto-update] [--local-only]
   install.sh --update
-  install.sh --uninstall
+  install.sh --uninstall [--purge]
 
 Options:
   --domain NAME   Install Caddy and serve HTTPS for this hostname.
+  --local-only    Do not restore a previously configured public hostname.
   --auto-update   Check for a verified release every day at 06:00 UTC.
   --update        Download and atomically activate the latest release.
   --uninstall     Remove the service, data, update job, and managed Caddy config.
+  --purge         With --uninstall, forget the saved public hostname too.
   -h, --help      Show this help.
 
 Environment:
@@ -73,6 +78,10 @@ while [ "$#" -gt 0 ]; do
       AUTO_UPDATE=true
       shift
       ;;
+    --local-only)
+      LOCAL_ONLY=true
+      shift
+      ;;
     --update)
       [ "$ACTION" = install ] || die "only one operation can be selected"
       ACTION=update
@@ -81,6 +90,10 @@ while [ "$#" -gt 0 ]; do
     --uninstall)
       [ "$ACTION" = install ] || die "only one operation can be selected"
       ACTION=uninstall
+      shift
+      ;;
+    --purge)
+      PURGE=true
       shift
       ;;
     -h|--help) usage; exit 0 ;;
@@ -94,7 +107,48 @@ command -v systemctl >/dev/null 2>&1 || die "a systemd-based Linux host is requi
 if [ "$ACTION" != install ] && { [ "$DOMAIN_SET" = true ] || [ "$AUTO_UPDATE" = true ]; }; then
   die "--$ACTION cannot be combined with installation options"
 fi
-if [ "$DOMAIN_SET" = true ] && ! [[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
+if [ "$LOCAL_ONLY" = true ] && [ "$DOMAIN_SET" = true ]; then
+  die "--local-only cannot be combined with --domain"
+fi
+if [ "$LOCAL_ONLY" = true ] && [ "$ACTION" != install ]; then
+  die "--local-only can only be used during installation"
+fi
+if [ "$PURGE" = true ] && [ "$ACTION" != uninstall ]; then
+  die "--purge can only be used with --uninstall"
+fi
+
+valid_domain() {
+  [[ "$1" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]
+}
+
+saved_domain() {
+  local state_file="$1" candidate
+  [ -r "$state_file" ] || return 1
+  candidate="$(sed -nE 's/^(DOMAIN|BGP_API_DOMAIN)=//p' "$state_file" | head -n 1)"
+  valid_domain "$candidate" || return 1
+  printf '%s\n' "$candidate"
+}
+
+remember_domain() {
+  local domain="$1" temporary
+  valid_domain "$domain" || return 1
+  install -d -m 0700 "$STATE_DIR"
+  temporary="$(mktemp "$REINSTALL_STATE_FILE.tmp.XXXXXX")"
+  printf 'DOMAIN=%s\n' "$domain" > "$temporary"
+  chmod 0600 "$temporary"
+  mv -f "$temporary" "$REINSTALL_STATE_FILE"
+}
+
+if [ "$ACTION" = install ] && [ "$DOMAIN_SET" = false ] && [ "$LOCAL_ONLY" = false ]; then
+  recovered_domain="$(saved_domain "$CADDY_ENV_FILE" || saved_domain "$REINSTALL_STATE_FILE" || true)"
+  if [ -n "$recovered_domain" ]; then
+    DOMAIN="$recovered_domain"
+    DOMAIN_SET=true
+    say "Reusing the previous public domain: $DOMAIN"
+  fi
+fi
+
+if [ "$DOMAIN_SET" = true ] && ! valid_domain "$DOMAIN"; then
   die "invalid domain: $DOMAIN"
 fi
 
@@ -209,6 +263,11 @@ EOF
 }
 
 uninstall_deployment() {
+  local domain=""
+  domain="$(saved_domain "$CADDY_ENV_FILE" || saved_domain "$REINSTALL_STATE_FILE" || true)"
+  if [ "$PURGE" = false ] && [ -n "$domain" ]; then
+    remember_domain "$domain"
+  fi
   step "Stopping and removing MehrNet BGP API"
   systemctl disable --now bgp-api.service >/dev/null 2>&1 || true
   systemctl disable --now bgp-api-secondary.service >/dev/null 2>&1 || true
@@ -217,6 +276,10 @@ uninstall_deployment() {
   rm -rf -- "$DATA_DIR" "$INSTALL_DIR"
   rm -f -- "$ENV_FILE" "$SECONDARY_ENV_FILE" "$UPDATE_ENV_FILE" "$CADDY_ENV_FILE" "$CADDY_CONFIG" "$CADDY_DROP_IN"
   rmdir "$CONFIG_DIR" /etc/systemd/system/caddy.service.d /etc/caddy/conf.d 2>/dev/null || true
+  if [ "$PURGE" = true ]; then
+    rm -f -- "$REINSTALL_STATE_FILE"
+    rmdir "$STATE_DIR" 2>/dev/null || true
+  fi
   systemctl daemon-reload
   if command -v caddy >/dev/null 2>&1 && systemctl is-active --quiet caddy; then
     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && systemctl reload caddy
@@ -339,11 +402,6 @@ BGP_API_STAGE_MEMORY_RESERVE_MIB=768
 BGP_API_DRAIN_GRACE_SECONDS=45
 EOF
 chmod 0600 "$UPDATE_ENV_FILE"
-{
-  printf 'DOMAIN=%s\n' "$DOMAIN"
-} > "$CONFIG_FILE"
-chmod 0600 "$CONFIG_FILE"
-
 systemctl daemon-reload
 systemctl enable bgp-api.service >/dev/null
 step "Downloading and activating the latest verified release"
@@ -356,6 +414,7 @@ systemctl is-active --quiet bgp-api.service || die "bgp-api failed to start"
 if [ "$DOMAIN_SET" = true ]; then
   step "Configuring HTTPS for $DOMAIN"
   configure_caddy "$work_dir" "$origin_token"
+  remember_domain "$DOMAIN"
 fi
 if [ "$AUTO_UPDATE" = true ]; then
   step "Scheduling daily updates at 06:00 UTC"

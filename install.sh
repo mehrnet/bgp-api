@@ -393,6 +393,16 @@ CORS_ALLOWED_ORIGINS_JSON='["https://bgp.mehrnet.com"]'
 EOF
 chown root:bgpapi "$SECONDARY_ENV_FILE"
 chmod 0640 "$SECONDARY_ENV_FILE"
+if [ "$DOMAIN_SET" = true ]; then
+  cat > "$CADDY_ENV_FILE" <<EOF
+BGP_API_DOMAIN=$DOMAIN
+ORIGIN_AUTH_TOKEN=$origin_token
+BGP_API_UPSTREAM=127.0.0.1:3102
+BGP_API_FALLBACK_UPSTREAM=127.0.0.1:3103
+EOF
+  chmod 0640 "$CADDY_ENV_FILE"
+  if getent group caddy >/dev/null 2>&1; then chown root:caddy "$CADDY_ENV_FILE"; fi
+fi
 cat > "$UPDATE_ENV_FILE" <<EOF
 BGP_API_GITHUB_REPOSITORY=$REPOSITORY
 BGP_API_GITHUB_TOKEN=${BGP_API_GITHUB_TOKEN:-}
@@ -405,11 +415,14 @@ chmod 0600 "$UPDATE_ENV_FILE"
 systemctl daemon-reload
 systemctl enable bgp-api.service >/dev/null
 step "Downloading and activating the latest verified release"
-BGP_API_DATABASE_PATH="$DATA_DIR/primary.bbolt" \
+ORIGIN_AUTH_TOKEN="$origin_token" \
+  BGP_API_DATABASE_PATH="$DATA_DIR/primary.bbolt" \
   BGP_API_PRIMARY_DATABASE_PATH="$DATA_DIR/primary.bbolt" \
   BGP_API_BLUE_GREEN=0 "$SYNC_SCRIPT"
-systemctl restart bgp-api.service
-systemctl is-active --quiet bgp-api.service || die "bgp-api failed to start"
+if ! systemctl is-active --quiet bgp-api.service; then
+  systemctl restart bgp-api.service
+  systemctl is-active --quiet bgp-api.service || die "bgp-api failed to start"
+fi
 
 if [ "$DOMAIN_SET" = true ]; then
   step "Configuring HTTPS for $DOMAIN"

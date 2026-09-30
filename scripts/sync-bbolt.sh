@@ -96,6 +96,27 @@ env_value() {
   sed -n "s/^${name}=//p" "$path" | head -n 1
 }
 
+auth_token_for_port() {
+  local port="$1" token="" env_file=""
+  case "$port" in
+    3102) env_file="$PRIMARY_ENV_FILE" ;;
+    3103) env_file="$SECONDARY_ENV_FILE" ;;
+  esac
+  if [ -n "$env_file" ]; then
+    token="$(env_value ORIGIN_AUTH_TOKEN "$env_file")"
+  fi
+  if [ -z "$token" ]; then
+    token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
+  fi
+  if [ -z "$token" ]; then
+    token="$(env_value ORIGIN_AUTH_TOKEN "$PRIMARY_ENV_FILE")"
+  fi
+  if [ -z "$token" ]; then
+    token="${ORIGIN_AUTH_TOKEN:-}"
+  fi
+  printf '%s\n' "$token"
+}
+
 service_active() { systemctl is-active --quiet "$1"; }
 
 memory_available_mib() {
@@ -134,7 +155,7 @@ restore_slot_priority() {
 runtime_cache_control_supported() {
   local service="$1" port="$2" token response
   service_main_pid "$service" >/dev/null || return 1
-  token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
+  token="$(auth_token_for_port "$port")"
   response="$(curl --fail --silent --show-error --max-time 3 \
     -H "X-BGP-API-Origin-Token: $token" \
     "http://127.0.0.1:$port/v1/health" 2>/dev/null)" || return 1
@@ -342,6 +363,8 @@ reload_caddy() {
   local domain token
   domain="$(env_value BGP_API_DOMAIN "$CADDY_ENV_FILE")"
   token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
+  [ -n "$token" ] || token="$(env_value ORIGIN_AUTH_TOKEN "$PRIMARY_ENV_FILE")"
+  [ -n "$token" ] || token="${ORIGIN_AUTH_TOKEN:-}"
   BGP_API_DOMAIN="${domain:-bgp-api.mehrnet.com}" \
     BGP_API_UPSTREAM="$upstream" \
     BGP_API_FALLBACK_UPSTREAM="$fallback" \
@@ -366,17 +389,25 @@ switch_caddy() {
 }
 
 health_check() {
-  local port="$1" token response
-  token="$(env_value ORIGIN_AUTH_TOKEN "$CADDY_ENV_FILE")"
+  local port="$1" token response="" last_error=""
+  token="$(auth_token_for_port "$port")"
   for ((attempt = 0; attempt < STARTUP_TIMEOUT_SECONDS; attempt++)); do
-    if response="$(curl --fail --silent --show-error --max-time 3 \
+    if response="$(curl --silent --show-error --max-time 3 \
       -H "X-BGP-API-Origin-Token: $token" \
-      "http://127.0.0.1:$port/v1/health" 2>/dev/null)" && \
-      jq -e --arg release "$release_tag" '.ok == true and .dataset.release_tag == $release' <<<"$response" >/dev/null; then
-      return 0
+      "http://127.0.0.1:$port/v1/health" 2>&1)"; then
+      if jq -e --arg release "$release_tag" '.ok == true and .dataset.release_tag == $release' <<<"$response" >/dev/null 2>&1; then
+        return 0
+      fi
+      last_error="unexpected response: $(head -c 200 <<<"$response")"
+    else
+      last_error="curl failed: $response"
+    fi
+    if [ "$attempt" -gt 0 ] && [ "$((attempt % 30))" -eq 0 ]; then
+      say "waiting for http://127.0.0.1:$port/v1/health ($last_error)"
     fi
     sleep 1
   done
+  [ -z "$last_error" ] || say "last health check result: $last_error"
   return 1
 }
 

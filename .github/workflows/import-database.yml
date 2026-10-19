@@ -3,7 +3,7 @@ name: Build and Publish BGP Database
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 4 * * *"
+    - cron: "0 4 */6 * *"
 
 permissions:
   contents: write

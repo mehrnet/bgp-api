@@ -28,13 +28,13 @@ All fixed-width integers are little endian; varints are unsigned LEB128.
 u8 format = 1
 u8 v4Bits, u8 v6Bits         granularity (24, 48 by default)
 u8 blockSize                 entries per index block (64)
-u8 n                         number of country codes
-n * 2 bytes                  ASCII codes; country index 1..n (index 0 = unknown)
+u16 n                        number of country codes
+n * 2 bytes                  ASCII codes; country index 1..n (index 0 = unknown, frequency-sorted)
 then the IPv4 family, then the IPv6 family:
   u32 entryCount
   u32 dataLen
   blocks * (key, u32 offset) key = ceil(bits/8) bytes: slot of the block's first entry
-  data                       per entry: uvarint(slot - previous slot), u8 country index
+  data                       per entry: uvarint(slot - previous slot), uvarint(country index)
 ```
 
 A *slot* is the address shifted right by `32 - v4Bits` (IPv4) or the top 64 bits shifted right by

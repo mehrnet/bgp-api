@@ -15,13 +15,13 @@
 //	u8 format (=1)
 //	u8 v4Bits, u8 v6Bits
 //	u8 blockSize                entries per block
-//	u8 countryCount             n, country index 0 is "unknown"
-//	n * 2 bytes                 ASCII country codes, index 1..n
+//	u16 countryCount            n, country index 0 is "unknown"
+//	n * 2 bytes                 ASCII country codes, index 1..n (frequency-sorted)
 //	family v4, then family v6:
 //	  u32 entryCount
 //	  u32 dataLen
 //	  blocks * (key, u32 offset)  key = ceil(bits/8) bytes, first block key is 0
-//	  data                      per entry: uvarint(start delta), u8 country index
+//	  data                      per entry: uvarint(start delta), uvarint(country index)
 //
 // An entry's range runs from its start to the next entry's start. The first
 // entry of every block has delta 0 (its start is the block key).
@@ -255,7 +255,7 @@ func getKey(src []byte) uint64 {
 	return v
 }
 
-func encodeFamily(buf *bytes.Buffer, segs []segment, bits, blockSize int, index map[uint16]byte) {
+func encodeFamily(buf *bytes.Buffer, segs []segment, bits, blockSize int, index map[uint16]uint16) {
 	kb := keyBytes(bits)
 	blocks := (len(segs) + blockSize - 1) / blockSize
 	var data bytes.Buffer
@@ -273,7 +273,8 @@ func encodeFamily(buf *bytes.Buffer, segs []segment, bits, blockSize int, index 
 		}
 		n := binary.PutUvarint(tmp[:], s.start-prev)
 		data.Write(tmp[:n])
-		data.WriteByte(index[s.country])
+		cn := binary.PutUvarint(tmp[:], uint64(index[s.country]))
+		data.Write(tmp[:cn])
 		prev = s.start
 	}
 	var word [4]byte
@@ -296,30 +297,35 @@ func (b *Builder) Encode(w io.Writer) (Stats, error) {
 	segs4 := flatten(b.v4, b.v4Bits)
 	segs6 := flatten(b.v6, b.v6Bits)
 
-	seen := map[uint16]struct{}{}
+	freq := map[uint16]int{}
 	for _, list := range [][]segment{segs4, segs6} {
 		for _, s := range list {
 			if s.country != 0 {
-				seen[s.country] = struct{}{}
+				freq[s.country]++
 			}
 		}
 	}
-	codes := make([]uint16, 0, len(seen))
-	for code := range seen {
+	codes := make([]uint16, 0, len(freq))
+	for code := range freq {
 		codes = append(codes, code)
 	}
-	sort.Slice(codes, func(i, j int) bool { return codes[i] < codes[j] })
-	if len(codes) > 255 {
-		return Stats{}, errors.New("more than 255 distinct country codes")
-	}
-	index := map[uint16]byte{0: 0}
+	// Sort most-frequent first so indices 1..127 encode as a single uvarint byte.
+	sort.Slice(codes, func(i, j int) bool {
+		if freq[codes[i]] != freq[codes[j]] {
+			return freq[codes[i]] > freq[codes[j]]
+		}
+		return codes[i] < codes[j]
+	})
+	index := map[uint16]uint16{0: 0}
 	for i, code := range codes {
-		index[code] = byte(i + 1)
+		index[code] = uint16(i + 1)
 	}
 
 	var buf bytes.Buffer
 	buf.WriteString(magic)
-	buf.Write([]byte{formatVersion, byte(b.v4Bits), byte(b.v6Bits), byte(b.blockSize), byte(len(codes))})
+	var countBytes [2]byte
+	binary.LittleEndian.PutUint16(countBytes[:], uint16(len(codes)))
+	buf.Write([]byte{formatVersion, byte(b.v4Bits), byte(b.v6Bits), byte(b.blockSize), countBytes[0], countBytes[1]})
 	for _, code := range codes {
 		buf.Write([]byte{byte(code >> 8), byte(code)})
 	}
@@ -350,15 +356,15 @@ var ErrFormat = errors.New("countrydb: invalid or truncated database")
 
 // Open parses data (which must outlive the DB).
 func Open(data []byte) (*DB, error) {
-	if len(data) < 9 || string(data[:4]) != magic || data[4] != formatVersion {
+	if len(data) < 10 || string(data[:4]) != magic || data[4] != formatVersion {
 		return nil, ErrFormat
 	}
 	db := &DB{v4Bits: int(data[5]), v6Bits: int(data[6]), blockSize: int(data[7])}
 	if db.v4Bits < 1 || db.v4Bits > 32 || db.v6Bits < 1 || db.v6Bits > maxBits || db.blockSize < 1 {
 		return nil, ErrFormat
 	}
-	n := int(data[8])
-	pos := 9
+	n := int(binary.LittleEndian.Uint16(data[8:10]))
+	pos := 10
 	if len(data) < pos+2*n {
 		return nil, ErrFormat
 	}
@@ -410,18 +416,22 @@ func (db *DB) lookup(f family, key uint64) (string, bool) {
 	if offset > end || end > len(f.data) {
 		return "", false
 	}
-	var country byte
+	var country uint64
 	for offset < end {
 		delta, n := binary.Uvarint(f.data[offset:end])
 		if n <= 0 || offset+n >= end {
+			return "", false
+		}
+		c, cn := binary.Uvarint(f.data[offset+n : end])
+		if cn <= 0 {
 			return "", false
 		}
 		start += delta
 		if start > key {
 			break
 		}
-		country = f.data[offset+n]
-		offset += n + 1
+		country = c
+		offset += n + cn
 	}
 	if country == 0 || int(country) > len(db.countries)/2 {
 		return "", false

@@ -180,3 +180,43 @@ func TestOpenRejectsGarbage(t *testing.T) {
 		}
 	}
 }
+
+func TestMoreThan255CountryCodes(t *testing.T) {
+	builder, err := NewBuilder(DefaultV4Bits, DefaultV6Bits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var slot uint64
+	for c1 := byte('A'); c1 <= 'Z'; c1++ {
+		for c2 := byte('A'); c2 <= 'Z'; c2++ {
+			code := string([]byte{c1, c2})
+			if builder.Add(v4Addr(slot, DefaultV4Bits, false), v4Addr(slot, DefaultV4Bits, true), code, LayerAllocation) != Added {
+				t.Fatalf("failed to add %s", code)
+			}
+			slot++
+		}
+	}
+	var buf bytes.Buffer
+	stats, err := builder.Encode(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Countries != 26*26 {
+		t.Fatalf("countries = %d, want %d", stats.Countries, 26*26)
+	}
+	db, err := Open(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot = 0
+	for c1 := byte('A'); c1 <= 'Z'; c1++ {
+		for c2 := byte('A'); c2 <= 'Z'; c2++ {
+			want := string([]byte{c1, c2})
+			got, ok := db.Lookup(v4Addr(slot, DefaultV4Bits, false))
+			if !ok || got != want {
+				t.Fatalf("slot %d: got %q,%v want %q", slot, got, ok, want)
+			}
+			slot++
+		}
+	}
+}

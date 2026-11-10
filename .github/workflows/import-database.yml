@@ -225,6 +225,45 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  build-country-database:
+    name: Build compact country database
+    needs: [release-metadata, parse-rir, prepare-geofeeds]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: data-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v6
+        with:
+          name: geofeed-locations
+          path: final_data
+      - name: Build and test country database
+        run: |
+          cat artifacts/allocations_*.csv > final_data/allocations.csv
+          go test ./internal/countrydb
+          go build -trimpath -o build-country-db ./cmd/build-country-db
+          ./build-country-db -input final_data -output country.mncc
+          test -s country.mncc
+      - name: Upload country database
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.release_tag }}
+        run: |
+          sha256sum country.mncc > checksum-country.txt
+          gh release upload "$RELEASE_TAG" country.mncc --clobber
+      - uses: actions/upload-artifact@v6
+        with:
+          name: checksum-country
+          path: checksum-country.txt
+          retention-days: 1
+          if-no-files-found: error
+
   build-api-binaries:
     name: Build static API binaries
     needs: release-metadata
@@ -265,7 +304,7 @@ jobs:
 
   publish-release:
     name: Publish database release
-    needs: [release-metadata, build-database, build-api-binaries]
+    needs: [release-metadata, build-database, build-country-database, build-api-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v6
@@ -302,7 +341,8 @@ jobs:
             bgp-api-linux-amd64.tar.gz \
             bgp-api-linux-arm64.tar.gz \
             mehrnet_bgp_bbolt.tar.zst \
-            mehrnet_bgp_sqlite.tar.zst; do
+            mehrnet_bgp_sqlite.tar.zst \
+            country.mncc; do
             grep -Fxq "$asset" <<< "$actual" || {
               echo "draft release is missing $asset" >&2
               exit 1
@@ -314,6 +354,7 @@ jobs:
 
           - `mehrnet_bgp_bbolt.tar.zst` contains the ready-to-query bbolt database. No import or index build is required on the API server.
           - `mehrnet_bgp_sqlite.tar.zst` contains the ready-to-query SQLite database for third-party users and offline inspection.
+          - `country.mncc` is a tiny IP-to-country-code database (MNCC format) for bundling into clients; see `docs/country-database.md`.
           - `bgp-api-linux-amd64.tar.gz` and `bgp-api-linux-arm64.tar.gz` contain statically linked API binaries.
           - `SHA256SUMS.txt` verifies every downloadable payload.
           EOF
